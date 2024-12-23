@@ -172,13 +172,11 @@ bool GBXCroppingNodelet::detectAndCrop(const cv::Mat& image, cv::Mat& warped_ima
     if (block_size % 2 == 0)
       block_size += 1;
     block_size = std::max(3, block_size);
-    thresh = cv::adaptiveThreshold(
-        blurred, thresh,
-        255,
-        cv::ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv::THRESH_BINARY_INV,
-        block_size, config_.C
-    );
+
+    cv::adaptiveThreshold(blurred, thresh, 255,
+                          cv::ADAPTIVE_THRESH_GAUSSIAN_C,
+                          cv::THRESH_BINARY_INV,
+                          block_size, config_.C);
   }
 
   // Morphological Operations with dynamic parameters
@@ -192,13 +190,13 @@ bool GBXCroppingNodelet::detectAndCrop(const cv::Mat& image, cv::Mat& warped_ima
     cv::MorphTypes morph_close_type;
     switch(config_.close_operation)
     {
-    case 0:
+    case ImageProcessing_CLOSE_OP_CLOSE:
       morph_close_type = cv::MORPH_CLOSE;
       break;
-    case 1:
+    case ImageProcessing_CLOSE_OP_OPEN:
       morph_close_type = cv::MORPH_OPEN;
       break;
-    case 2:
+    case ImageProcessing_CLOSE_OP_GRADIENT:
       morph_close_type = cv::MORPH_GRADIENT;
       break;
     default:
@@ -215,13 +213,13 @@ bool GBXCroppingNodelet::detectAndCrop(const cv::Mat& image, cv::Mat& warped_ima
     cv::MorphTypes morph_dilate_type;
     switch(config_.dilate_operation)
     {
-    case 0:
+    case ImageProcessing_DILATE_OP_DILATE:
       morph_dilate_type = cv::MORPH_DILATE;
       break;
-    case 1:
+    case ImageProcessing_DILATE_OP_ERODE:
       morph_dilate_type = cv::MORPH_ERODE;
       break;
-    case 2:
+    case ImageProcessing_DILATE_OP_OPEN:
       morph_dilate_type = cv::MORPH_OPEN;
       break;
     default:
@@ -315,7 +313,7 @@ bool GBXCroppingNodelet::detectAndCrop(const cv::Mat& image, cv::Mat& warped_ima
 
   // Publish annotated image
   cv_bridge::CvImage annotated_msg;
-  annotated_msg.header = msg->header; // 保留原始图像的头信息
+  annotated_msg.header = last_msg_->header; // 保留原始图像的头信息
   annotated_msg.encoding = sensor_msgs::image_encodings::BGR8;
   annotated_msg.image = detected_circles_image;
   pub_annotated_.publish(annotated_msg.toImageMsg());
@@ -331,7 +329,7 @@ bool GBXCroppingNodelet::detectAndCrop(const cv::Mat& image, cv::Mat& warped_ima
       std::lock_guard<std::mutex> lock(param_mutex_);
       // 使用Boost库形式连接路径
       boost::filesystem::path dir(config_.output_directory);
-      boost::filesystem::path filename = "cropped_" + std::to_string(static_cast<long long>(msg->header.stamp.toNSec())) + ".jpg";
+      boost::filesystem::path filename = "cropped_" + std::to_string(static_cast<long long>(last_msg_->header.stamp.toNSec())) + ".jpg";
       output_path = (dir / filename).string();
     }
     bool success = cv::imwrite(output_path, warped_image);
@@ -518,8 +516,8 @@ double GBXCroppingNodelet::computeSSIM(const cv::Mat& img1, const cv::Mat& img2)
 
 void GBXCroppingNodelet::imageCallback(const sensor_msgs::ImageConstPtr& msg)
 {
-  std::lock_guard<std::mutex> lock(mutex_);
-
+  std::lock_guard<std::mutex> lock(image_mutex_);
+  last_msg_ = msg;
   cv_bridge::CvImagePtr cv_ptr;
   try
   {

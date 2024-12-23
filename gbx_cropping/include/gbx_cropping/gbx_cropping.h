@@ -60,7 +60,9 @@ private:
   std::mutex param_mutex_;
 
   // Buffer for images
+  sensor_msgs::ImageConstPtr last_msg_;
   std::mutex image_mutex_;
+  cv::Mat reference_image_;
   std::vector<cv::Mat> image_buffer_;
 };
 

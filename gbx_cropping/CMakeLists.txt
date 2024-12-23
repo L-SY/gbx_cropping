@@ -12,6 +12,7 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 find_package(OpenCV REQUIRED)
+find_package(Boost REQUIRED COMPONENTS filesystem)
 
 generate_dynamic_reconfigure_options(
         cfg/ImageProcessing.cfg
@@ -28,8 +29,7 @@ include_directories(
         include
         ${catkin_INCLUDE_DIRS}
         ${OpenCV_INCLUDE_DIRS}
-        ${dynamic_reconfigure_PACKAGE_PATH}
-        ./
+        ${Boost_INCLUDE_DIRS}
 )
 
 add_library(gbx_cropping
