@@ -1,24 +1,14 @@
-//
-// Created by lsy on 24-12-23.
-//
-
-#pragma once
+#ifndef GBX_CROPPING_H
+#define GBX_CROPPING_H
 
 #include <nodelet/nodelet.h>
-#include <pluginlib/class_list_macros.h>
 #include <ros/ros.h>
-#include <sensor_msgs/Image.h>
-#include <cv_bridge/cv_bridge.h>
 #include <image_transport/image_transport.h>
-#include <opencv2/opencv.hpp>
-
+#include <sensor_msgs/Image.h>
 #include <dynamic_reconfigure/server.h>
 #include <gbx_cropping/ImageProcessingConfig.h>
-
+#include <opencv2/core/core.hpp>
 #include <mutex>
-#include <vector>
-#include <string>
-#include <boost/filesystem.hpp>
 
 namespace gbx_cropping
 {
@@ -26,44 +16,30 @@ namespace gbx_cropping
 class GBXCroppingNodelet : public nodelet::Nodelet
 {
 public:
-  GBXCroppingNodelet();
-  ~GBXCroppingNodelet();
-
-private:
   virtual void onInit();
 
+private:
   void imageCallback(const sensor_msgs::ImageConstPtr& msg);
-  void triggerCB(gbx_cropping::ImageProcessingConfig &config, uint32_t level);
-
-  // Image processing functions
+  void triggerCB(ImageProcessingConfig &config, uint32_t level);
+  bool detectCircles(const cv::Mat& image, std::vector<cv::Point2f>& centers);
   std::vector<cv::Point2f> sortPoints(const std::vector<cv::Point2f>& pts);
-  cv::Mat warpPerspectiveCustom(const cv::Mat& image, const std::vector<cv::Point2f>& pts, int width = 500, int height = 500);
-  bool detectAndCrop(const cv::Mat& image, cv::Mat& warped_image, std::vector<cv::Point2f>& centers);
+  void publishImage(const cv::Mat& image, const image_transport::Publisher& publisher, 
+                    const std::string& encoding);
 
-  // Stitching function
-  cv::Mat stitchImages(const cv::Mat& image1, const cv::Mat& image2);
-  cv::Mat stitchImagesWithOrb(const cv::Mat& image1, const cv::Mat& image2);
-
-  // SSIM calculation
-  double computeSSIM(const cv::Mat& img1, const cv::Mat& img2);
-
-  // Publishers
-  image_transport::Publisher pub_annotated_;
-  image_transport::Publisher pub_stitched_;
-
-  // Subscribers
   image_transport::Subscriber sub_;
-
-  // Dynamic Reconfigure
-  dynamic_reconfigure::Server<gbx_cropping::ImageProcessingConfig> server_;
-  gbx_cropping::ImageProcessingConfig config_;
+  image_transport::Publisher pub_gray_;
+  image_transport::Publisher pub_blurred_;
+  image_transport::Publisher pub_thresh_;
+  image_transport::Publisher pub_annotated_;
+  
+  dynamic_reconfigure::Server<ImageProcessingConfig> server_;
+  dynamic_reconfigure::Server<ImageProcessingConfig>::CallbackType f_;
+  ImageProcessingConfig config_;
+  
   std::mutex param_mutex_;
-
-  // Buffer for images
   sensor_msgs::ImageConstPtr last_msg_;
-  std::mutex image_mutex_;
-  cv::Mat reference_image_;
-  std::vector<cv::Mat> image_buffer_;
 };
 
 } // namespace gbx_cropping
+
+#endif // GBX_CROPPING_H

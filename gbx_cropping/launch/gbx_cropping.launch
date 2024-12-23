@@ -9,18 +9,24 @@
           args="load gbx_cropping/GBXCroppingNodelet vision_nodelet" output="screen">
 
         <remap from="/hk_camera/image_raw" to="$(arg camera_topic)"/>
-        <param name="output_directory" value="$(arg output_dir)"/>
         <param name="block_size" value="11"/>
         <param name="C" value="2.0"/>
+        <param name="blur_size" value="9"/>
         <param name="min_area" value="3000.0"/>
         <param name="max_area" value="500000.0"/>
         <param name="circularity_threshold" value="0.1"/>
-        <param name="close_kernel_size" value="2"/>
-        <param name="close_iterations" value="3"/>
-        <param name="close_operation" value="0"/>
-        <param name="dilate_kernel_size" value="2"/>
-        <param name="dilate_iterations" value="3"/>
-        <param name="dilate_operation" value="0"/>
+<!--        <param name="output_directory" value="$(arg output_dir)"/>-->
+<!--        <param name="block_size" value="11"/>-->
+<!--        <param name="C" value="2.0"/>-->
+<!--        <param name="min_area" value="3000.0"/>-->
+<!--        <param name="max_area" value="500000.0"/>-->
+<!--        <param name="circularity_threshold" value="0.1"/>-->
+<!--        <param name="close_kernel_size" value="2"/>-->
+<!--        <param name="close_iterations" value="3"/>-->
+<!--        <param name="close_operation" value="0"/>-->
+<!--        <param name="dilate_kernel_size" value="2"/>-->
+<!--        <param name="dilate_iterations" value="3"/>-->
+<!--        <param name="dilate_operation" value="0"/>-->
     </node>
 
 <!--    <node pkg="rqt_reconfigure" type="rqt_reconfigure" name="rqt_reconfigure" output="screen"/>-->
