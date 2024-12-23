@@ -1,16 +1,9 @@
-//
-// Created by lsy on 24-12-23.
-//
-
-#include "gbx_cropping/gbx_cropping.h"
-
+#include <gbx_cropping/gbx_cropping.h>
 #include <pluginlib/class_list_macros.h>
-#include <geometry_msgs/Point.h>
-#include <std_msgs/String.h>
-
-// Include headers for SSIM
-#include <algorithm>
-#include <numeric>
+#include <cv_bridge/cv_bridge.h>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/highgui.hpp>
+#include <boost/filesystem.hpp>
 #include <cmath>
 
 namespace gbx_cropping
@@ -29,69 +22,90 @@ void GBXCroppingNodelet::onInit()
   ros::NodeHandle& nh = getNodeHandle();
   ros::NodeHandle& private_nh = getPrivateNodeHandle();
 
+  // Initialize image transport
   image_transport::ImageTransport it(nh);
   sub_ = it.subscribe("/hk_camera/image_raw", 1, &GBXCroppingNodelet::imageCallback, this);
 
+  // Initialize publishers
   pub_annotated_ = it.advertise("annotated_image", 1);
   pub_stitched_ = it.advertise("stitched_image", 1);
 
-  // Load the reference image for SSIM
-  std::string reference_image_path;
-  private_nh.param<std::string>("reference_image_path", reference_image_path, "reference_stitched_image.jpg");
-  reference_image_ = cv::imread(reference_image_path, cv::IMREAD_COLOR);
-  if (reference_image_.empty())
+  // Initialize dynamic reconfigure
+  dynamic_reconfigure::Server<ImageProcessingConfig>::CallbackType f;
+  f = boost::bind(&GBXCroppingNodelet::triggerCB, this, _1, _2);
+  server_.setCallback(f);
+
+  // Ensure output directory exists
   {
-    NODELET_ERROR("Failed to load reference image from %s", reference_image_path.c_str());
+    std::lock_guard<std::mutex> lock(param_mutex_);
+    if (!boost::filesystem::exists(config_.output_directory))
+    {
+      boost::filesystem::create_directories(config_.output_directory);
+      NODELET_INFO("Created output directory: %s", config_.output_directory.c_str());
+    }
   }
-  else
+
+  NODELET_INFO("Image Stitching Nodelet Initialized");
+}
+
+void GBXCroppingNodelet::triggerCB(ImageProcessingConfig &config, uint32_t level)
+{
+  std::lock_guard<std::mutex> lock(param_mutex_);
+  config_ = config;
+  NODELET_INFO("Dynamic Reconfigure Request: block_size=%d, C=%.2f, min_area=%.2f, max_area=%.2f, circularity_threshold=%.2f, close_kernel_size=%d, close_iterations=%d, close_operation=%d, dilate_kernel_size=%d, dilate_iterations=%d, dilate_operation=%d, output_directory=%s",
+               config_.block_size, config_.C, config_.min_area, config_.max_area,
+               config_.circularity_threshold, config_.close_kernel_size, config_.close_iterations,
+               config_.close_operation, config_.dilate_kernel_size, config_.dilate_iterations,
+               config_.dilate_operation, config_.output_directory.c_str());
+
+  // Ensure output directory exists
+  if (!boost::filesystem::exists(config_.output_directory))
   {
-    NODELET_INFO("Loaded reference image from %s", reference_image_path.c_str());
+    boost::filesystem::create_directories(config_.output_directory);
+    NODELET_INFO("Created output directory: %s", config_.output_directory.c_str());
   }
 }
 
 std::vector<cv::Point2f> GBXCroppingNodelet::sortPoints(const std::vector<cv::Point2f>& pts)
 {
   std::vector<cv::Point2f> sorted;
-  if (pts.size() != 4)
+  if (pts.size() < 1)
   {
-    NODELET_ERROR("Cannot sort points, expected 4 points but got %lu", pts.size());
+    NODELET_ERROR("No points to sort");
     return sorted;
   }
 
-  // Copy points to a mutable vector
-  std::vector<cv::Point2f> points = pts;
-
-  // Initialize variables
-  cv::Point2f left_top, right_top, right_bottom, left_bottom;
-
-  // Compute the sum and difference for each point
-  std::vector<float> sum_pts;
-  std::vector<float> diff_pts;
-  for (size_t i = 0; i < points.size(); ++i)
+  // Trivial sorting if points are fewer than 4
+  if (pts.size() < 4)
   {
-    sum_pts.push_back(points[i].x + points[i].y);
-    diff_pts.push_back(points[i].y - points[i].x);
+    sorted = pts;
+    return sorted;
   }
 
-  // Find left_top (smallest sum)
-  auto min_sum_it = std::min_element(sum_pts.begin(), sum_pts.end());
-  size_t left_top_idx = std::distance(sum_pts.begin(), min_sum_it);
-  left_top = points[left_top_idx];
+  // Sort the points as per left-top, right-top, right-bottom, left-bottom
+  // Calculate the sum and difference
+  std::vector<double> sums, diffs;
+  for (const auto& pt : pts)
+  {
+    sums.push_back(pt.x + pt.y);
+    diffs.push_back(pt.y - pt.x);
+  }
 
-  // Find right_bottom (largest sum)
-  auto max_sum_it = std::max_element(sum_pts.begin(), sum_pts.end());
-  size_t right_bottom_idx = std::distance(sum_pts.begin(), max_sum_it);
-  right_bottom = points[right_bottom_idx];
+  // Find the left-top point (smallest sum)
+  size_t left_top_idx = std::min_element(sums.begin(), sums.end()) - sums.begin();
+  cv::Point2f left_top = pts[left_top_idx];
 
-  // Find right_top (smallest difference)
-  auto min_diff_it = std::min_element(diff_pts.begin(), diff_pts.end());
-  size_t right_top_idx = std::distance(diff_pts.begin(), min_diff_it);
-  right_top = points[right_top_idx];
+  // Find the right-bottom point (largest sum)
+  size_t right_bottom_idx = std::max_element(sums.begin(), sums.end()) - sums.begin();
+  cv::Point2f right_bottom = pts[right_bottom_idx];
 
-  // Find left_bottom (largest difference)
-  auto max_diff_it = std::max_element(diff_pts.begin(), diff_pts.end());
-  size_t left_bottom_idx = std::distance(diff_pts.begin(), max_diff_it);
-  left_bottom = points[left_bottom_idx];
+  // Find the right-top point (smallest difference)
+  size_t right_top_idx = std::min_element(diffs.begin(), diffs.end()) - diffs.begin();
+  cv::Point2f right_top = pts[right_top_idx];
+
+  // Find the left-bottom point (largest difference)
+  size_t left_bottom_idx = std::max_element(diffs.begin(), diffs.end()) - diffs.begin();
+  cv::Point2f left_bottom = pts[left_bottom_idx];
 
   sorted.push_back(left_top);
   sorted.push_back(right_top);
@@ -117,7 +131,7 @@ cv::Mat GBXCroppingNodelet::warpPerspectiveCustom(const cv::Mat& image, const st
 
   cv::Mat M = cv::getPerspectiveTransform(pts, dst);
   cv::Mat warped;
-  cv::warpPerspective(image, warped, M, cv::Size(width, height));
+  cv::warpPerspective(image, warped, M, cv::Size(width, height), cv::INTER_LANCZOS4);
 
   return warped;
 }
@@ -131,32 +145,92 @@ bool GBXCroppingNodelet::detectAndCrop(const cv::Mat& image, cv::Mat& warped_ima
     return false;
   }
 
+  // Convert to grayscale
   cv::Mat gray;
   if (image.channels() == 3)
     cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
   else
     gray = image.clone();
 
-  // Apply Gaussian Blur
+  // Apply Gaussian Blur with dynamic parameters
   cv::Mat blurred;
-  cv::GaussianBlur(gray, blurred, cv::Size(9, 9), 2);
+  {
+    std::lock_guard<std::mutex> lock(param_mutex_);
+    int block_size = config_.block_size;
+    // Ensure block_size is odd and >=3
+    if (block_size % 2 == 0)
+      block_size += 1;
+    block_size = std::max(3, block_size);
+    cv::GaussianBlur(gray, blurred, cv::Size(block_size, block_size), 0);
+  }
 
-  // Adaptive Thresholding (Inverse Binary)
+  // Adaptive Thresholding (Inverse Binary) with dynamic parameters
   cv::Mat thresh;
-  cv::adaptiveThreshold(
-      blurred, thresh,
-      255,
-      cv::ADAPTIVE_THRESH_GAUSSIAN_C,
-      cv::THRESH_BINARY_INV,
-      11, 2
-  );
+  {
+    std::lock_guard<std::mutex> lock(param_mutex_);
+    int block_size = config_.block_size;
+    if (block_size % 2 == 0)
+      block_size += 1;
+    block_size = std::max(3, block_size);
+    thresh = cv::adaptiveThreshold(
+        blurred, thresh,
+        255,
+        cv::ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv::THRESH_BINARY_INV,
+        block_size, config_.C
+    );
+  }
 
-  // Morphological Operations (Close and Dilate)
-  cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(2,2));
-  cv::Mat thresh_close;
-  cv::morphologyEx(thresh, thresh_close, cv::MORPH_CLOSE, kernel, cv::Point(-1,-1), 3);
-  cv::Mat thresh_dilate;
-  cv::morphologyEx(thresh_close, thresh_dilate, cv::MORPH_DILATE, kernel, cv::Point(-1,-1), 3);
+  // Morphological Operations with dynamic parameters
+  cv::Mat thresh_close, thresh_dilate;
+  {
+    std::lock_guard<std::mutex> lock(param_mutex_);
+    // Closed Morphology
+    int close_kernel_size = config_.close_kernel_size;
+    close_kernel_size = std::max(1, close_kernel_size);
+    cv::Mat kernel_close = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(close_kernel_size, close_kernel_size));
+    cv::MorphTypes morph_close_type;
+    switch(config_.close_operation)
+    {
+    case 0:
+      morph_close_type = cv::MORPH_CLOSE;
+      break;
+    case 1:
+      morph_close_type = cv::MORPH_OPEN;
+      break;
+    case 2:
+      morph_close_type = cv::MORPH_GRADIENT;
+      break;
+    default:
+      NODELET_WARN("Unsupported close_operation: %d. Using MORPH_CLOSE.", config_.close_operation);
+      morph_close_type = cv::MORPH_CLOSE;
+      break;
+    }
+    cv::morphologyEx(thresh, thresh_close, morph_close_type, kernel_close, cv::Point(-1,-1), config_.close_iterations);
+
+    // Dilate Morphology
+    int dilate_kernel_size = config_.dilate_kernel_size;
+    dilate_kernel_size = std::max(1, dilate_kernel_size);
+    cv::Mat kernel_dilate = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(dilate_kernel_size, dilate_kernel_size));
+    cv::MorphTypes morph_dilate_type;
+    switch(config_.dilate_operation)
+    {
+    case 0:
+      morph_dilate_type = cv::MORPH_DILATE;
+      break;
+    case 1:
+      morph_dilate_type = cv::MORPH_ERODE;
+      break;
+    case 2:
+      morph_dilate_type = cv::MORPH_OPEN;
+      break;
+    default:
+      NODELET_WARN("Unsupported dilate_operation: %d. Using MORPH_DILATE.", config_.dilate_operation);
+      morph_dilate_type = cv::MORPH_DILATE;
+      break;
+    }
+    cv::morphologyEx(thresh_close, thresh_dilate, morph_dilate_type, kernel_dilate, cv::Point(-1,-1), config_.dilate_iterations);
+  }
 
   // Find Contours
   std::vector<std::vector<cv::Point>> contours;
@@ -168,8 +242,11 @@ bool GBXCroppingNodelet::detectAndCrop(const cv::Mat& image, cv::Mat& warped_ima
   for (size_t i = 0; i < contours.size(); ++i)
   {
     double area = cv::contourArea(contours[i]);
-    if (area < 3000 || area > 500000)
-      continue;
+    {
+      std::lock_guard<std::mutex> lock(param_mutex_);
+      if (area < config_.min_area || area > config_.max_area)
+        continue;
+    }
 
     cv::Point2f center;
     float radius;
@@ -179,8 +256,12 @@ bool GBXCroppingNodelet::detectAndCrop(const cv::Mat& image, cv::Mat& warped_ima
     if (perimeter == 0)
       continue;
     double circularity = 4 * CV_PI * (area / (perimeter * perimeter));
-    if (circularity < 0.1)
-      continue;
+
+    {
+      std::lock_guard<std::mutex> lock(param_mutex_);
+      if (circularity < config_.circularity_threshold)
+        continue;
+    }
 
     centers.push_back(center);
 
@@ -198,12 +279,30 @@ bool GBXCroppingNodelet::detectAndCrop(const cv::Mat& image, cv::Mat& warped_ima
 
   // Sort points if enough are detected
   std::vector<cv::Point2f> sorted_centers;
-  if (centers.size() >= 4)
+  if (centers.size() == 4)
   {
     sorted_centers = sortPoints(centers);
   }
+  else if (centers.size() > 4)
+  {
+    // Sort contours by area in descending order and select top 4
+    std::sort(contours.begin(), contours.end(), [&](const std::vector<cv::Point>& a, const std::vector<cv::Point>& b) -> bool {
+      return cv::contourArea(a) > cv::contourArea(b);
+    });
 
-  // Draw connecting lines
+    centers.clear();
+    for(int i = 0; i < 4 && i < contours.size(); ++i)
+    {
+      cv::Point2f center;
+      float radius;
+      cv::minEnclosingCircle(contours[i], center, radius);
+      centers.push_back(center);
+    }
+
+    sorted_centers = sortPoints(centers);
+  }
+
+  // Draw connecting lines if sorted_centers has at least two points
   for (size_t i = 0; i < sorted_centers.size(); ++i)
   {
     cv::line(
@@ -216,15 +315,31 @@ bool GBXCroppingNodelet::detectAndCrop(const cv::Mat& image, cv::Mat& warped_ima
 
   // Publish annotated image
   cv_bridge::CvImage annotated_msg;
-  annotated_msg.header = std_msgs::Header();
+  annotated_msg.header = msg->header; // 保留原始图像的头信息
   annotated_msg.encoding = sensor_msgs::image_encodings::BGR8;
   annotated_msg.image = detected_circles_image;
   pub_annotated_.publish(annotated_msg.toImageMsg());
 
-  // If enough points are detected, perform cropping
+  // If enough points are detected, perform cropping and save
   if (sorted_centers.size() == 4)
   {
     warped_image = warpPerspectiveCustom(image, sorted_centers, 500, 500);
+
+    // Save cropped image with timestamp
+    std::string output_path;
+    {
+      std::lock_guard<std::mutex> lock(param_mutex_);
+      // 使用Boost库形式连接路径
+      boost::filesystem::path dir(config_.output_directory);
+      boost::filesystem::path filename = "cropped_" + std::to_string(static_cast<long long>(msg->header.stamp.toNSec())) + ".jpg";
+      output_path = (dir / filename).string();
+    }
+    bool success = cv::imwrite(output_path, warped_image);
+    if(success)
+      NODELET_INFO("Cropped image saved to: %s", output_path.c_str());
+    else
+      NODELET_ERROR("Failed to save cropped image to: %s", output_path.c_str());
+
     return true;
   }
   else
@@ -233,6 +348,7 @@ bool GBXCroppingNodelet::detectAndCrop(const cv::Mat& image, cv::Mat& warped_ima
     warped_image = image.clone();
     return false;
   }
+
 }
 
 cv::Mat GBXCroppingNodelet::stitchImages(const cv::Mat& image1, const cv::Mat& image2)
@@ -243,6 +359,7 @@ cv::Mat GBXCroppingNodelet::stitchImages(const cv::Mat& image1, const cv::Mat& i
     return cv::Mat();
   }
 
+  // Using OpenCV's Stitcher and correctly handling cv::Ptr
   cv::Ptr<cv::Stitcher> stitcher = cv::Stitcher::create(cv::Stitcher::PANORAMA);
   cv::Stitcher::Status status = stitcher->stitch(std::vector<cv::Mat>{image1, image2}, image1); // image1 will contain the stitched image
 
@@ -255,11 +372,80 @@ cv::Mat GBXCroppingNodelet::stitchImages(const cv::Mat& image1, const cv::Mat& i
   // Publish stitched image
   cv_bridge::CvImage stitched_msg;
   stitched_msg.header = std_msgs::Header();
+  stitched_msg.header.stamp = ros::Time::now();
   stitched_msg.encoding = sensor_msgs::image_encodings::BGR8;
   stitched_msg.image = image1;
   pub_stitched_.publish(stitched_msg.toImageMsg());
 
   return image1;
+}
+
+cv::Mat GBXCroppingNodelet::stitchImagesWithOrb(const cv::Mat& image1, const cv::Mat& image2)
+{
+  if (image1.empty() || image2.empty())
+  {
+    NODELET_ERROR("One or both images to stitch are empty");
+    return cv::Mat();
+  }
+
+  // Initialize ORB detector with increased features for better matching
+  cv::Ptr<cv::ORB> orb = cv::ORB::create(5000);
+
+  // Detect keypoints and compute descriptors
+  std::vector<cv::KeyPoint> keypoints1, keypoints2;
+  cv::Mat descriptors1, descriptors2;
+  orb->detectAndCompute(image1, cv::noArray(), keypoints1, descriptors1);
+  orb->detectAndCompute(image2, cv::noArray(), keypoints2, descriptors2);
+
+  // Create BFMatcher with Hamming distance
+  cv::BFMatcher matcher(cv::NORM_HAMMING, true);
+  std::vector<cv::DMatch> matches;
+  matcher.match(descriptors1, descriptors2, matches);
+
+  // Sort matches by distance
+  std::sort(matches.begin(), matches.end(), [](const cv::DMatch& a, const cv::DMatch& b) -> bool {
+    return a.distance < b.distance;
+  });
+
+  // Select top matches (e.g., top 100)
+  int numGoodMatches = std::min(100, static_cast<int>(matches.size()));
+  matches.resize(numGoodMatches);
+
+  // Extract location of good matches
+  std::vector<cv::Point2f> pts1, pts2;
+  for(const auto& match : matches)
+  {
+    pts1.push_back(keypoints1[match.queryIdx].pt);
+    pts2.push_back(keypoints2[match.trainIdx].pt);
+  }
+
+  // Find homography using RANSAC
+  cv::Mat H = cv::findHomography(pts2, pts1, cv::RANSAC, 5.0);
+  if (H.empty())
+  {
+    NODELET_ERROR("Homography computation failed");
+    return cv::Mat();
+  }
+
+  // Warp image2 to image1's perspective
+  cv::Mat warped_image2;
+  cv::warpPerspective(image2, warped_image2, H, cv::Size(image1.cols + image2.cols, image1.rows), cv::INTER_LANCZOS4);
+
+  // Place image1 on the stitched canvas
+  cv::Mat stitched = warped_image2.clone();
+  image1.copyTo(stitched(cv::Rect(0, 0, image1.cols, image1.rows)));
+
+  // Optional: Apply blending to reduce seam artifacts (e.g., multi-band blending)
+
+  // Publish stitched image
+  cv_bridge::CvImage stitched_msg;
+  stitched_msg.header = std_msgs::Header();
+  stitched_msg.header.stamp = ros::Time::now();
+  stitched_msg.encoding = sensor_msgs::image_encodings::BGR8;
+  stitched_msg.image = stitched;
+  pub_stitched_.publish(stitched_msg.toImageMsg());
+
+  return stitched;
 }
 
 double GBXCroppingNodelet::computeSSIM(const cv::Mat& img1, const cv::Mat& img2)

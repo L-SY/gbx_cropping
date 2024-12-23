@@ -8,14 +8,19 @@ find_package(catkin REQUIRED COMPONENTS
         cv_bridge
         image_transport
         std_msgs
+        dynamic_reconfigure
 )
 
 find_package(OpenCV REQUIRED)
 
+generate_dynamic_reconfigure_options(
+        cfg/ImageProcessing.cfg
+)
+
 catkin_package(
         INCLUDE_DIRS include
-        LIBRARIES gbx_cropping_nodelet
-        CATKIN_DEPENDS roscpp nodelet sensor_msgs cv_bridge image_transport std_msgs
+        LIBRARIES gbx_cropping
+        CATKIN_DEPENDS roscpp nodelet sensor_msgs cv_bridge image_transport std_msgs dynamic_reconfigure
         DEPENDS OpenCV
 )
 
@@ -23,18 +28,22 @@ include_directories(
         include
         ${catkin_INCLUDE_DIRS}
         ${OpenCV_INCLUDE_DIRS}
+        ${dynamic_reconfigure_PACKAGE_PATH}
+        ./
 )
 
-add_library(gbx_cropping_nodelet
+add_library(gbx_cropping
         src/gbx_cropping.cpp
 )
 
-target_link_libraries(gbx_cropping_nodelet
+target_link_libraries(gbx_cropping
         ${catkin_LIBRARIES}
         ${OpenCV_LIBRARIES}
 )
 
-install(TARGETS gbx_cropping_nodelet
+add_dependencies(gbx_cropping ${PROJECT_NAME}_gencfg ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+
+install(TARGETS gbx_cropping
         LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
 )
 

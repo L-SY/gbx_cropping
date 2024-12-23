@@ -1,6 +1,6 @@
-<library path="libgbx_cropping_nodelet">
-    <class name="gbx_cropping_nodelet/GBXCroppingNodelet"
-           type="gbx_cropping_nodelet::GBXCroppingNodelet"
+<library path="libgbx_cropping">
+    <class name="gbx_cropping/GBXCroppingNodelet"
+           type="gbx_cropping::GBXCroppingNodelet"
            base_class_type="nodelet::Nodelet">
         <description>
             Image Stitching Nodelet for detecting and stitching images.
