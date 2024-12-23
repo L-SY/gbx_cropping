@@ -1,0 +1,11 @@
+hk_camera:
+  gain_value: 13.0
+  gain_auto: true
+  gamma_selector: 0
+  gamma_value: 0.7
+  exposure_auto: false
+  exposure_value: 20.0
+  exposure_max: 20.0
+  exposure_min: 20.0
+  white_auto: false
+  white_selector: 0

@@ -1,0 +1,9 @@
+<library path="lib/libhk_camera">
+    <class name="hk_camera/HKCameraNodelet"
+           type="hk_camera::HKCameraNodelet"
+           base_class_type="nodelet::Nodelet">
+        <description>
+            A implementation of hk_camera
+        </description>
+    </class>
+</library>
