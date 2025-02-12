@@ -77,20 +77,37 @@ class ModelEvaluator:
         true_values = []
         absolute_errors = []
         relative_errors = []
+        total_time = 0
+        total_images = 0
 
         with torch.no_grad():
             for images, labels in tqdm(self.test_loader, desc='Evaluating'):
                 images, labels = images.to(self.device), labels.to(self.device)
-                outputs = self.model(images)
 
-                # Collect predictions and true values
+                # 记录开始时间
+                start_time = torch.cuda.Event(enable_timing=True)
+                end_time = torch.cuda.Event(enable_timing=True)
+
+                start_time.record()
+                outputs = self.model(images)
+                end_time.record()
+
+                # 等待GPU操作完成
+                torch.cuda.synchronize()
+
+                # 累加批次时间（毫秒转换为秒）
+                batch_time = start_time.elapsed_time(end_time) / 1000
+                total_time += batch_time
+                total_images += images.size(0)
+
+                # 收集预测和真实值
                 pred_np = outputs.cpu().numpy()
                 true_np = labels.cpu().numpy()
 
                 predictions.extend(pred_np)
                 true_values.extend(true_np)
 
-                # Calculate errors
+                # 计算误差
                 abs_error = np.abs(pred_np - true_np)
                 rel_error = abs_error / (true_np + 1e-10) * 100
 
@@ -102,7 +119,10 @@ class ModelEvaluator:
         absolute_errors = np.array(absolute_errors)
         relative_errors = np.array(relative_errors)
 
-        # Calculate metrics
+        # 计算平均单张图片预测时间
+        avg_time_per_image = total_time / total_images
+
+        # 计算指标
         metrics = {
             'MSE': np.mean((predictions - true_values) ** 2),
             'RMSE': np.sqrt(np.mean((predictions - true_values) ** 2)),
@@ -111,7 +131,8 @@ class ModelEvaluator:
             'Max_Error': np.max(absolute_errors),
             'Min_Error': np.min(absolute_errors),
             'Std_Error': np.std(absolute_errors),
-            'R2': self.r2_score(true_values, predictions)
+            'R2': self.r2_score(true_values, predictions),
+            'Avg_Time_Per_Image': avg_time_per_image
         }
 
         return metrics, predictions, true_values
@@ -127,7 +148,7 @@ class ModelEvaluator:
         """Analyze model performance and generate report"""
         metrics, predictions, true_values = self.compute_metrics()
 
-        # Print metrics
+        # 打印指标
         print("\n=== Model Performance Evaluation Report ===")
         print(f"Mean Squared Error (MSE): {metrics['MSE']:.4f}")
         print(f"Root Mean Squared Error (RMSE): {metrics['RMSE']:.4f}")
@@ -137,8 +158,9 @@ class ModelEvaluator:
         print(f"Minimum Error: {metrics['Min_Error']:.4f}")
         print(f"Standard Deviation of Error: {metrics['Std_Error']:.4f}")
         print(f"R² Score: {metrics['R2']:.4f}")
+        print(f"Average Time per Image: {metrics['Avg_Time_Per_Image']*1000:.2f} ms")
 
-        # Plot detailed analysis
+        # 绘制详细分析图表
         self.plot_analysis(predictions, true_values, metrics)
 
         return metrics
@@ -223,7 +245,7 @@ def evaluate_model():
     ])
 
     test_dataset = RegressionDataset(
-        os.path.join("/home/lsy/gbx_cropping_ws/src/image_tools/dataset", 'test'),
+        os.path.join("/home/lsy/gbx_cropping_ws/src/image_tools/dataset", 'whole'),
         transform=transform
     )
 
