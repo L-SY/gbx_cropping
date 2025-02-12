@@ -91,6 +91,30 @@ class ImageDatasetOrganizer:
         # 创建数据集信息文件
         self.create_dataset_info(train_data, val_data, test_data)
 
+    def prepare_whole_dataset(self):
+        """
+        新增方法：将 self.valid_data (全部有效数据)
+        复制到一个 'whole' 文件夹并保存对应的 CSV
+        """
+        whole_dir = os.path.join(self.output_base_path, 'whole')
+        os.makedirs(whole_dir, exist_ok=True)
+
+        labels = []
+        for item in self.valid_data:
+            dest_path = os.path.join(whole_dir, item['image_name'])
+            shutil.copy2(item['image_path'], dest_path)
+            labels.append({
+                'image_name': item['image_name'],
+                'label': item['label']
+            })
+
+        # 保存 CSV
+        pd.DataFrame(labels).to_csv(
+            os.path.join(whole_dir, 'whole_labels.csv'),
+            index=False
+        )
+        print(f"'whole' 文件夹已创建，共 {len(labels)} 张图片。")
+
     def save_dataset_split(self, data, split_name):
         """保存数据集划分"""
         split_dir = os.path.join(self.output_base_path, split_name)
@@ -193,7 +217,7 @@ def main():
     if organizer.load_and_verify_data():
         # 准备数据集
         organizer.prepare_dataset()
-
+        organizer.prepare_whole_dataset()
         # 示例：创建数据加载器
         transform = transforms.Compose([
             transforms.Resize((224, 224)),
