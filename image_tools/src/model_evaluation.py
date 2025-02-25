@@ -8,6 +8,7 @@ from PIL import Image
 import pandas as pd
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+import torchvision.transforms.functional as F
 
 # Set random seed
 torch.manual_seed(42)
@@ -63,6 +64,18 @@ class ImageRegressor(nn.Module):
 
     def forward(self, x):
         return self.backbone(x).squeeze()
+
+class RandomAdjustTexture(object):
+    def __init__(self, sharpness_factor=1.0):
+        """
+        固定的锐度增强因子，用于验证
+        """
+        self.sharpness_factor = sharpness_factor
+
+    def __call__(self, img):
+        tensor_img = transforms.ToTensor()(img)
+        sharpened_tensor = F.adjust_sharpness(tensor_img, self.sharpness_factor)
+        return transforms.ToPILImage()(sharpened_tensor)
 
 class ModelEvaluator:
     def __init__(self, model, device, test_loader):
@@ -239,6 +252,7 @@ def evaluate_model():
     # Prepare test data
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
+        RandomAdjustTexture(sharpness_factor=1.0),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                              std=[0.229, 0.224, 0.225])

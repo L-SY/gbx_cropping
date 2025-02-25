@@ -4,69 +4,87 @@ import numpy as np
 from PIL import Image
 import torch
 from torchvision import transforms
+import torchvision.transforms.functional as F
 
 def show_transform_steps(image_path):
     """
-    从指定 image_path 读取图像，依次执行:
-      1) 原图
-      2) Resize(224, 224)
-      3) ToTensor()
-      4) Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    并分别显示在同一张图上。
+    展示所有预处理步骤的效果
     """
     # 1) 读取原图
     original_img = Image.open(image_path).convert('RGB')
 
-    # 2) Resize
-    resized_img = transforms.Resize((224, 224))(original_img)
+    # 2) 随机旋转
+    rotated_img = transforms.RandomRotation(degrees=30)(original_img)
 
-    # 3) ToTensor (结果是 [C, H, W] 范围在 [0,1])
+    # 3) 随机锐度调整
+    tensor_for_sharp = transforms.ToTensor()(rotated_img)
+    sharpened_tensor = F.adjust_sharpness(tensor_for_sharp, 10)  # 使用1.5作为示例锐度因子
+    sharpened_img = transforms.ToPILImage()(sharpened_tensor)
+
+    # 4) 颜色变换
+    color_jittered = transforms.ColorJitter(
+        brightness=(1.0, 1.2),  # 只在原始亮度基础上增加0-20%
+        contrast=(0.8, 1.2),
+        saturation=(0.8, 1.2),
+        hue=0.02
+    )(sharpened_img)
+
+    # 5) Resize
+    resized_img = transforms.Resize((224, 224))(color_jittered)
+
+    # 6) ToTensor
     tensor_img = transforms.ToTensor()(resized_img)
 
-    # 4) Normalize (使用 ImageNet 预训练默认平均值和标准差)
+    # 7) Normalize
     normalize_transform = transforms.Normalize(
         mean=[0.485, 0.456, 0.406],
-        std =[0.229, 0.224, 0.225]
+        std=[0.229, 0.224, 0.225]
     )
     normalized_tensor = normalize_transform(tensor_img)
 
-    # 开始可视化
-    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
+    # 可视化
+    fig, axes = plt.subplots(2, 4, figsize=(20, 10))
     fig.suptitle("Transform comparison of each step", fontsize=16)
 
-    # (a) 原始图像
-    axes[0].imshow(original_img)
-    axes[0].set_title("Original")
-    axes[0].axis("off")
+    # 展示所有步骤
+    images = [
+        (original_img, "Original"),
+        (rotated_img, "After Rotation"),
+        (sharpened_img, "After Sharpness"),
+        (color_jittered, "After ColorJitter"),
+        (resized_img, "Resized (224×224)"),
+    ]
 
-    # (b) Resize 后图像
-    axes[1].imshow(resized_img)
-    axes[1].set_title("Resized (224×224)")
-    axes[1].axis("off")
+    # 前5张图片
+    for idx, (img, title) in enumerate(images):
+        row = idx // 4
+        col = idx % 4
+        axes[row, col].imshow(img)
+        axes[row, col].set_title(title)
+        axes[row, col].axis("off")
 
-    # (c) ToTensor() 后的图像
-    #     张量转到 [H, W, C] 并用 .numpy() 转为 NumPy 数组以可视化
-    tensor_c = tensor_img.permute(1, 2, 0).numpy()
-    # 因为它本身已经在 [0,1] 范围，可以直接显示
-    axes[2].imshow(tensor_c)
-    axes[2].set_title("After ToTensor()")
-    axes[2].axis("off")
+    # ToTensor结果
+    tensor_vis = tensor_img.permute(1, 2, 0).numpy()
+    axes[1, 1].imshow(tensor_vis)
+    axes[1, 1].set_title("After ToTensor()")
+    axes[1, 1].axis("off")
 
-    # (d) Normalize 后的图像
-    #     归一化后张量数值可能包含负值，这里用 clip 到 [0,1] 范围便于可视化
-    normalized_c = normalized_tensor.permute(1, 2, 0).numpy()
-    normalized_c = np.clip(normalized_c, 0, 1)
-    axes[3].imshow(normalized_c)
-    axes[3].set_title("After Normalize")
-    axes[3].axis("off")
+    # Normalize结果
+    normalized_vis = normalized_tensor.permute(1, 2, 0).numpy()
+    normalized_vis = np.clip(normalized_vis, 0, 1)
+    axes[1, 2].imshow(normalized_vis)
+    axes[1, 2].set_title("After Normalize")
+    axes[1, 2].axis("off")
+
+    # 隐藏多余的子图
+    axes[1, 3].axis("off")
 
     plt.tight_layout()
     plt.show()
 
 if __name__ == "__main__":
-    # 假设 train 文件夹路径
-    train_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/dataset/train"  # 请替换成自己的train目录
-    sample_image = "cropped_raw_2.jpg"               # 请替换成自己train目录下的一张有效图片
+    train_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/dataset/train"
+    sample_image = "cropped_raw_2.jpg"
     image_path = os.path.join(train_folder, sample_image)
 
     show_transform_steps(image_path)
