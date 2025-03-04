@@ -17,37 +17,37 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, models
 import torchvision.transforms.functional as F
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedKFold
 
 # matplotlib导入
 import matplotlib.pyplot as plt
 import seaborn as sns
 
 class FixedRotation(object):
-    """固定角度旋转: 只旋转0°、90°、180°或270°"""
+    """Fixed angle rotation: only rotate 0°, 90°, 180° or 270°"""
     def __init__(self, p=0.75):
         """
-        参数:
-            p: 应用旋转的概率 (0°角度的概率为1-p)
+        Parameters:
+            p: probability to apply rotation (0° angle probability is 1-p)
         """
         self.p = p
-        self.angles = [90, 180, 270]  # 可选旋转角度
+        self.angles = [90, 180, 270]  # possible rotation angles
 
     def __call__(self, img):
         if torch.rand(1) < self.p:
-            # 随机选择一个角度
+            # randomly select an angle
             angle = self.angles[torch.randint(0, len(self.angles), (1,)).item()]
             return img.rotate(angle)
-        return img  # 不旋转(0°)
+        return img  # no rotation (0°)
 
 class AdaptiveEdgeEnhancer(object):
-    """自适应边缘增强器"""
+    """Adaptive edge enhancer"""
     def __init__(self, alpha=1.5, beta=0.5, p=0.7):
         """
-        参数:
-            alpha: 边缘增强强度
-            beta: 原始图像保留比例
-            p: 应用此变换的概率
+        Parameters:
+            alpha: edge enhancement strength
+            beta: original image retention ratio
+            p: probability to apply transformation
         """
         self.alpha = alpha
         self.beta = beta
@@ -55,50 +55,50 @@ class AdaptiveEdgeEnhancer(object):
 
     def __call__(self, img):
         if torch.rand(1) < self.p:
-            # 转为numpy数组处理
+            # Convert to numpy array
             img_np = np.array(img)
 
-            # 转为灰度进行边缘检测
+            # Convert to grayscale for edge detection
             gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY) if len(img_np.shape) == 3 else img_np
 
-            # 使用自适应阈值方法 - 高斯权重, 块大小11, 常数2
+            # Use adaptive threshold method - Gaussian weights, block size 11, constant 2
             binary = cv2.adaptiveThreshold(
                 gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                 cv2.THRESH_BINARY, 11, 2
             )
 
-            # 用Canny进一步检测边缘
+            # Use Canny for further edge detection
             edges = cv2.Canny(gray, 50, 150)
 
-            # 应用形态学操作来连接相近的边缘
+            # Apply morphological operations to connect nearby edges
             kernel = np.ones((3, 3), np.uint8)
             edges = cv2.dilate(edges, kernel, iterations=1)
             edges = cv2.erode(edges, kernel, iterations=1)
 
-            # 结合两种边缘效果
+            # Combine both edge effects
             combined_edges = cv2.bitwise_or(binary, edges)
 
-            # 如果是彩色图像,使用边缘增强
+            # For color images, use edge enhancement
             if len(img_np.shape) == 3:
-                # 创建边缘蒙版
+                # Create edge mask
                 edge_mask = combined_edges / 255.0
                 edge_mask_3d = np.stack([edge_mask] * 3, axis=2)
 
-                # 锐化原图
+                # Sharpen original image
                 sharpened = img_np.astype(float)
                 blurred = cv2.GaussianBlur(img_np, (0, 0), 3)
                 sharpened = cv2.addWeighted(img_np, 1.5, blurred, -0.5, 0)
 
-                # 混合原图和边缘信息
+                # Blend original image and edge information
                 result = img_np * self.beta + sharpened * (1 - self.beta)
-                # 在边缘位置额外增强
+                # Extra enhancement at edge positions
                 result = result * (1 - edge_mask_3d * self.alpha) + sharpened * (edge_mask_3d * self.alpha)
                 result = np.clip(result, 0, 255).astype(np.uint8)
 
                 return Image.fromarray(result)
 
             else:
-                # 灰度图处理
+                # Grayscale processing
                 sharpened = cv2.addWeighted(gray, 1.5, cv2.GaussianBlur(gray, (0, 0), 3), -0.5, 0)
                 result = gray * self.beta + sharpened * (1 - self.beta)
                 result = result * (1 - edge_mask * self.alpha) + sharpened * (edge_mask * self.alpha)
@@ -109,7 +109,7 @@ class AdaptiveEdgeEnhancer(object):
         return img
 
 class ContrastTextureEnhancer(object):
-    """对比度感知纹理增强器"""
+    """Contrast-aware texture enhancer"""
     def __init__(self, clip_limit=3.0, tile_grid_size=(8, 8), p=0.7):
         self.clip_limit = clip_limit
         self.tile_grid_size = tile_grid_size
@@ -117,33 +117,32 @@ class ContrastTextureEnhancer(object):
 
     def __call__(self, img):
         if torch.rand(1) < self.p:
-            # 转为numpy数组
+            # Convert to numpy array
             img_np = np.array(img)
 
-            # 转为LAB颜色空间
-            if len(img_np.shape) == 3:  # 彩色图像
+            # Convert to LAB color space
+            if len(img_np.shape) == 3:  # color image
                 lab = cv2.cvtColor(img_np, cv2.COLOR_RGB2LAB)
                 l, a, b = cv2.split(lab)
 
-                # 对L通道应用CLAHE (对比度受限的自适应直方图均衡化)
+                # Apply CLAHE to L channel (Contrast Limited Adaptive Histogram Equalization)
                 clahe = cv2.createCLAHE(clipLimit=self.clip_limit, tileGridSize=self.tile_grid_size)
                 cl = clahe.apply(l)
 
-                # 合并回LAB再转回RGB
+                # Merge back to LAB and convert to RGB
                 enhanced_lab = cv2.merge((cl, a, b))
                 enhanced_rgb = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2RGB)
 
                 return Image.fromarray(enhanced_rgb)
-            else:  # 灰度图
+            else:  # grayscale
                 clahe = cv2.createCLAHE(clipLimit=self.clip_limit, tileGridSize=self.tile_grid_size)
                 enhanced = clahe.apply(img_np)
                 return Image.fromarray(enhanced)
 
         return img
 
-# 数据集分割器 - 新增加的类
 class DatasetSplitter:
-    """将原始数据集分割为训练集、验证集和测试集"""
+    """Split original dataset into training, validation and test sets"""
     def __init__(self, source_dir, labels_file, target_dir, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15, random_state=42):
         self.source_dir = source_dir
         self.labels_file = labels_file
@@ -153,7 +152,7 @@ class DatasetSplitter:
         self.test_ratio = test_ratio
         self.random_state = random_state
 
-        # 确保比例和为1
+        # Ensure ratios sum to 1
         assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-5, "Ratios must sum to 1"
 
     def split_dataset(self):
@@ -185,20 +184,70 @@ class DatasetSplitter:
         if len(valid_df) == 0:
             raise ValueError("No valid images found. Please check the source directory and labels file.")
 
-        # 分割为训练集和临时集
-        train_df, temp_df = train_test_split(
-            valid_df,
-            train_size=self.train_ratio,
-            random_state=self.random_state
-        )
+        try:
+            # 尝试创建分层标签
+            # 使用更少的分箱数量，确保每个箱子有足够的样本
+            n_bins = min(5, len(valid_df) // 10)  # 确保每个bin至少有10个样本
+            n_bins = max(2, n_bins)  # 至少使用2个bin
 
-        # 将临时集再分为验证集和测试集
-        val_size = self.val_ratio / (self.val_ratio + self.test_ratio)
-        val_df, test_df = train_test_split(
-            temp_df,
-            train_size=val_size,
-            random_state=self.random_state
-        )
+            print(f"Attempting stratified split with {n_bins} bins")
+
+            # 创建分箱，如果有重复值，允许它们进入同一个bin
+            valid_df['label_bin'] = pd.qcut(
+                valid_df['label'],
+                q=n_bins,
+                labels=False,
+                duplicates='drop'
+            )
+
+            # 检查每个bin中的样本数量
+            bin_counts = valid_df['label_bin'].value_counts()
+            print(f"Bin counts: {bin_counts.to_dict()}")
+
+            # 确保每个bin至少有2个样本
+            if bin_counts.min() >= 2:
+                # 使用分层抽样
+                train_df, temp_df = train_test_split(
+                    valid_df,
+                    train_size=self.train_ratio,
+                    random_state=self.random_state,
+                    stratify=valid_df['label_bin']
+                )
+
+                val_size = self.val_ratio / (self.val_ratio + self.test_ratio)
+                val_df, test_df = train_test_split(
+                    temp_df,
+                    train_size=val_size,
+                    random_state=self.random_state,
+                    stratify=temp_df['label_bin']
+                )
+
+                # 移除临时的bin列
+                train_df = train_df.drop('label_bin', axis=1)
+                val_df = val_df.drop('label_bin', axis=1)
+                test_df = test_df.drop('label_bin', axis=1)
+
+                print("Successfully performed stratified split")
+            else:
+                raise ValueError(f"Some bins have less than 2 samples, using random split instead")
+
+        except Exception as e:
+            print(f"Stratified split failed: {str(e)}")
+            print("Falling back to random split")
+
+            # 回退到随机分割
+            train_df, temp_df = train_test_split(
+                valid_df,
+                train_size=self.train_ratio,
+                random_state=self.random_state
+            )
+
+            val_size = self.val_ratio / (self.val_ratio + self.test_ratio)
+            val_df, test_df = train_test_split(
+                temp_df,
+                train_size=val_size,
+                random_state=self.random_state
+            )
 
         print(f"Split dataset: {len(train_df)} training, {len(val_df)} validation, {len(test_df)} test")
 
@@ -208,16 +257,16 @@ class DatasetSplitter:
         self._save_subset(test_df, 'test')
 
     def _save_subset(self, df, subset_name):
-        """保存数据子集"""
+        """Save a subset of data"""
         target_dir = os.path.join(self.target_dir, subset_name)
 
-        # 复制图片并保存标签
+        # Copy images and save labels
         for idx, row in tqdm(df.iterrows(), desc=f"Copying {subset_name} set", total=len(df)):
-            # 构建源路径和目标路径
+            # Build source and destination paths
             src_path = os.path.join(self.source_dir, row['image_name'])
             dst_path = os.path.join(target_dir, row['image_name'])
 
-            # 复制图片
+            # Copy image
             try:
                 image = Image.open(src_path)
                 image.save(dst_path)
@@ -225,33 +274,46 @@ class DatasetSplitter:
                 print(f"Error copying {src_path}: {e}")
                 continue
 
-        # 保存标签文件
+        # Save labels file
         df.to_csv(os.path.join(target_dir, f'{subset_name}_labels.csv'), index=False)
         print(f"Saved {len(df)} images to {subset_name} set")
 
 class DatasetAugmenter:
-    """数据集增强器 - 修改后版本"""
-    def __init__(self, augmentation_factor=5):
+    """Dataset augmenter - modified version"""
+    def __init__(self, augmentation_factor=5, is_training=True):
         self.augmentation_factor = augmentation_factor
-        self.transform = transforms.Compose([
-            # 1) 固定角度旋转 (0°, 90°, 180°, 270°)
-            FixedRotation(p=0.75),
 
-            # 1) 自适应边缘增强
-            AdaptiveEdgeEnhancer(alpha=1.7, beta=0.4, p=0.8),
+        # Determine the transform based on whether this is for training data
+        if is_training:
+            self.transform = transforms.Compose([
+                # 1) Fixed angle rotation (0°, 90°, 180°, 270°)
+                FixedRotation(p=0.75),
+                # 2) Adaptive edge enhancement
+                AdaptiveEdgeEnhancer(alpha=1.7, beta=0.4, p=0.8),
+                # 3) Contrast-aware texture enhancement
+                ContrastTextureEnhancer(
+                    clip_limit=3.0, tile_grid_size=(8, 8), p=0.7),
+                # Resize to target size
+                transforms.Resize((224, 224)),
+            ])
+        else:
+            # Lighter transforms for validation/test
+            self.transform = transforms.Compose([
+                # Only essential preprocessing for validation/test
+                FixedRotation(p=0.75),
 
-            # 2) 对比度感知纹理增强
-            ContrastTextureEnhancer(clip_limit=3.0, tile_grid_size=(8, 8), p=0.7),
+                # AdaptiveEdgeEnhancer(alpha=1.7, beta=0.4, p=0.8),
+                # # 3) Contrast-aware texture enhancement
+                # ContrastTextureEnhancer(
+                #     clip_limit=3.0, tile_grid_size=(8, 8), p=0.7),
+                transforms.Resize((224, 224)),
+            ])
 
-            # 调整到指定大小
-            transforms.Resize((224, 224)),
-        ])
-
-    def augment_dataset(self, source_dir, target_dir):
+    def augment_dataset(self, source_dir, target_dir, is_training=True):
         """增强数据集并保存"""
         os.makedirs(target_dir, exist_ok=True)
 
-        # 读取原始标签文件 - 适应现有的命名约定
+        # 读取原始标签文件
         subset_name = os.path.basename(source_dir)  # 'train', 'val', 或 'test'
         labels_file = os.path.join(source_dir, f'{subset_name}_labels.csv')
 
@@ -265,7 +327,7 @@ class DatasetAugmenter:
         # 用于存储新的标签
         new_records = []
 
-        # 对每张图片进行增强
+        # 对每张图片进行处理
         for idx, row in tqdm(original_df.iterrows(), desc=f"Augmenting {subset_name} dataset"):
             img_path = os.path.join(source_dir, row['image_name'])
 
@@ -281,21 +343,23 @@ class DatasetAugmenter:
 
             # 保存原始图片
             original_name = f"orig_{row['image_name']}"
-            image.save(os.path.join(target_dir, original_name))
+            resized_image = transforms.Resize((224, 224))(image)  # 确保所有图像都调整为相同大小
+            resized_image.save(os.path.join(target_dir, original_name))
             new_records.append({
                 'image_name': original_name,
                 'label': row['label']
             })
 
-            # 生成增强图片
-            for aug_idx in range(self.augmentation_factor):
-                aug_image = self.transform(image)
-                aug_name = f"aug{aug_idx}_{row['image_name']}"
-                aug_image.save(os.path.join(target_dir, aug_name))
-                new_records.append({
-                    'image_name': aug_name,
-                    'label': row['label']
-                })
+            # 为训练集生成增强图片
+            if self.augmentation_factor > 0:
+                for aug_idx in range(self.augmentation_factor):
+                    aug_image = self.transform(image)
+                    aug_name = f"aug{aug_idx}_{row['image_name']}"
+                    aug_image.save(os.path.join(target_dir, aug_name))
+                    new_records.append({
+                        'image_name': aug_name,
+                        'label': row['label']
+                    })
 
         # 保存新的标签文件
         new_df = pd.DataFrame(new_records)
@@ -305,13 +369,13 @@ class DatasetAugmenter:
         print(f"Augmented {subset_name} dataset: {len(original_df)} original images -> {len(new_df)} total images")
 
 class RegressionDataset(Dataset):
-    """自定义数据集类"""
+    """Custom dataset class"""
     def __init__(self, data_dir, transform=None):
         self.data_dir = data_dir
         self.transform = transform
 
-        # 读取标签文件
-        subset_name = os.path.basename(data_dir)  # 'train', 'val', 或 'test'
+        # Read labels file
+        subset_name = os.path.basename(data_dir)  # 'train', 'val', or 'test'
         labels_file = os.path.join(data_dir, f'{subset_name}_labels.csv')
 
         if not os.path.exists(labels_file):
@@ -323,25 +387,24 @@ class RegressionDataset(Dataset):
         return len(self.labels_df)
 
     def __getitem__(self, idx):
-        # 获取图片路径和标签
+        # Get image path and label
         row = self.labels_df.iloc[idx]
         img_path = os.path.join(self.data_dir, row['image_name'])
         label = row['label']
 
-        # 读取和转换图片
+        # Read and transform image
         image = Image.open(img_path).convert('RGB')
         if self.transform:
             image = self.transform(image)
 
         return image, torch.tensor(label, dtype=torch.float32)
 
-# 修改后的冻结CNN+FC层模型
 class FrozenCNNRegressor(nn.Module):
-    """使用冻结CNN特征提取器和可训练FC层的纹理回归模型"""
-    def __init__(self, backbone='densenet121', pretrained=True, initial_value=15.0):
+    """Texture regression model using frozen CNN feature extractor and trainable FC layers"""
+    def __init__(self, backbone='densenet121', pretrained=True, initial_value=15.0, dropout_rate=0.5):
         super(FrozenCNNRegressor, self).__init__()
 
-        # 加载预训练骨干网络
+        # Load pretrained backbone network
         if backbone == 'densenet121':
             base_model = models.densenet121(pretrained=pretrained)
             self.features = base_model.features
@@ -352,7 +415,7 @@ class FrozenCNNRegressor(nn.Module):
             feature_dim = base_model.classifier.in_features  # 1664
         elif backbone == 'resnet18':
             base_model = models.resnet18(pretrained=pretrained)
-            # 移除全局平均池化层和全连接层
+            # Remove global average pooling and fully connected layers
             self.features = nn.Sequential(*list(base_model.children())[:-2])
             feature_dim = 512
         elif backbone == 'resnet34':
@@ -368,67 +431,71 @@ class FrozenCNNRegressor(nn.Module):
             self.features = base_model.features
             feature_dim = 1280
         else:
-            raise ValueError(f"不支持的骨干网络: {backbone}")
+            raise ValueError(f"Unsupported backbone: {backbone}")
 
-        # 冻结特征提取器
+        # Freeze feature extractor
         for param in self.features.parameters():
             param.requires_grad = False
 
-        # 全局平均池化层
+        # Global average pooling layer
         self.global_pool = nn.AdaptiveAvgPool2d(1)
 
-        # 带有L2正则化效果的回归头 (类似Ridge回归)
+        # Regression head with L2 regularization effect (like Ridge regression)
         self.regressor = nn.Sequential(
             nn.Flatten(),
             nn.Linear(feature_dim, 256),
-            nn.BatchNorm1d(256),  # 批量归一化有助于稳定训练
+            nn.BatchNorm1d(256),
             nn.ReLU(),
-            nn.Dropout(0.3),      # 丢弃法帮助防止过拟合
-            nn.Linear(256, 64),
+            nn.Dropout(dropout_rate),
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate * 0.8),
+            nn.Linear(128, 64),
             nn.BatchNorm1d(64),
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(dropout_rate * 0.6),
             nn.Linear(64, 1)
         )
 
-        # 初始化最后一层的偏置为指定值
+        # Initialize the bias of the final layer to the specified value
         final_layer = self.regressor[-1]
         nn.init.constant_(final_layer.bias, initial_value)
 
     def forward(self, x):
-        # 提取特征 (冻结阶段)
+        # Extract features (frozen stage)
         with torch.no_grad():
             features = self.features(x)
 
-        # 全局平均池化
+        # Global average pooling
         pooled = self.global_pool(features)
 
-        # 回归预测 (可训练部分)
+        # Regression prediction (trainable part)
         output = self.regressor(pooled).squeeze()
 
         return output
 
     def unfreeze_last_layers(self, num_layers=2):
-        """解冻CNN特征提取器的最后几层进行微调"""
-        # 对于不同的骨干网络，需要具体实现解冻机制
+        """Unfreeze last few layers of CNN feature extractor for fine-tuning"""
+        # Implementation depends on the specific backbone
         if isinstance(self.features, nn.Sequential):
-            # 这适用于ResNet等顺序模型
+            # This is suitable for ResNet and other sequential models
             for i, module in enumerate(list(self.features.children())[-num_layers:]):
                 for param in module.parameters():
                     param.requires_grad = True
-            print(f"已解冻最后{num_layers}层顺序模块")
+            print(f"Unfrozen last {num_layers} sequential modules")
         elif hasattr(self.features, 'denseblock4'):
-            # 这适用于DenseNet
+            # This is suitable for DenseNet
             for param in self.features.denseblock4.parameters():
                 param.requires_grad = True
             for param in self.features.norm5.parameters():
                 param.requires_grad = True
-            print(f"已解冻DenseNet的最后一个密集块和norm层")
+            print(f"Unfrozen DenseNet's last dense block and norm layer")
         else:
-            print("无法识别的骨干网络结构，未解冻任何层")
+            print("Unknown backbone structure, no layers unfrozen")
 
 class MixedRegressionLoss(nn.Module):
-    """混合回归损失函数"""
+    """Mixed regression loss function"""
     def __init__(self, mse_weight=0.5, l1_weight=0.3, huber_weight=0.2):
         super(MixedRegressionLoss, self).__init__()
         self.mse = nn.MSELoss()
@@ -448,7 +515,7 @@ class MixedRegressionLoss(nn.Module):
                 self.huber_weight * huber_loss)
 
 class Trainer:
-    """训练器类"""
+    """Trainer class"""
     def __init__(self, model, train_loader, val_loader, test_loader=None, device='cuda',
                  learning_rate=0.001, save_dir='checkpoints'):
         self.model = model.to(device)
@@ -458,33 +525,33 @@ class Trainer:
         self.device = device
         self.save_dir = save_dir
 
-        # 创建保存目录
+        # Create save directory
         os.makedirs(save_dir, exist_ok=True)
 
-        # 定义优化器和混合损失函数
+        # Define optimizer and mixed loss function
         self.criterion = MixedRegressionLoss(mse_weight=0.5, l1_weight=0.3, huber_weight=0.2)
 
-        # 获取只有require_grad=True的参数进行优化
-        # 这样只会更新解冻部分的参数，大大提高训练效率
+        # Get only parameters with requires_grad=True for optimization
+        # This will only update unfrozen parameters, greatly improving training efficiency
         params_to_update = []
         for name, param in model.named_parameters():
             if param.requires_grad:
                 params_to_update.append(param)
 
-        print(f"可训练参数数量: {len(params_to_update)}")
+        print(f"Trainable parameters: {len(params_to_update)}")
 
-        # 使用AdamW优化器，带有L2正则化
+        # Use AdamW optimizer with L2 regularization
         self.optimizer = optim.AdamW(params_to_update, lr=learning_rate, weight_decay=1e-4)
 
-        # 学习率调度 - 使用余弦退火
+        # Learning rate scheduler - cosine annealing with warm restarts
         self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
             self.optimizer,
-            T_0=20,        # 重启周期
-            T_mult=2,      # 每次重启后周期增加系数
-            eta_min=1e-6   # 最小学习率
+            T_0=20,        # restart period
+            T_mult=2,      # period multiplier after each restart
+            eta_min=1e-6   # minimum learning rate
         )
 
-        # 记录训练历史
+        # Record training history
         self.history = {
             'train_loss': [],
             'val_loss': [],
@@ -493,13 +560,13 @@ class Trainer:
             'best_epoch': 0
         }
 
-        # 早停计数器
-        self.patience = 25  # 25个epoch没有提升则停止
+        # Early stopping counter
+        self.patience = 80  # Increased from 25 to 30 epochs
         self.patience_counter = 0
         self.early_stop = False
 
     def train_epoch(self):
-        """训练一个epoch"""
+        """Train for one epoch"""
         self.model.train()
         total_loss = 0
         progress_bar = tqdm(self.train_loader, desc='Training')
@@ -513,7 +580,7 @@ class Trainer:
 
             loss.backward()
 
-            # 梯度裁剪，防止梯度爆炸
+            # Gradient clipping to prevent gradient explosion
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
 
             self.optimizer.step()
@@ -524,7 +591,7 @@ class Trainer:
         return total_loss / len(self.train_loader)
 
     def validate(self, data_loader, desc='Validating'):
-        """验证模型"""
+        """Validate the model"""
         self.model.eval()
         total_loss = 0
         predictions = []
@@ -545,15 +612,15 @@ class Trainer:
                 np.array(true_values))
 
     def evaluate_all_datasets(self):
-        """对所有数据集进行评估并生成综合报告"""
-        print("\n评估所有数据集...")
-        # 加载最佳模型
+        """Evaluate all datasets and generate comprehensive report"""
+        print("\nEvaluating all datasets...")
+        # Load best model
         self.load_checkpoint('best_model.pth')
 
-        # 创建结果存储字典
+        # Create results storage dictionary
         results = {}
 
-        # 评估训练集
+        # Evaluate training set
         train_loss, train_preds, train_true = self.validate(self.train_loader, desc='Evaluating Training Set')
         results['train'] = {
             'loss': train_loss,
@@ -564,7 +631,7 @@ class Trainer:
             'mae': np.mean(np.abs(train_preds - train_true))
         }
 
-        # 评估验证集
+        # Evaluate validation set
         val_loss, val_preds, val_true = self.validate(self.val_loader, desc='Evaluating Validation Set')
         results['val'] = {
             'loss': val_loss,
@@ -575,7 +642,7 @@ class Trainer:
             'mae': np.mean(np.abs(val_preds - val_true))
         }
 
-        # 评估测试集
+        # Evaluate test set
         test_loss, test_preds, test_true = self.validate(self.test_loader, desc='Evaluating Test Set')
         results['test'] = {
             'loss': test_loss,
@@ -586,41 +653,107 @@ class Trainer:
             'mae': np.mean(np.abs(test_preds - test_true))
         }
 
-        # 保存结果
+        # Save results
         self.plot_all_datasets_comparison(results)
         self.create_metrics_table(results)
 
+        # Analyze the validation performance
+        self.analyze_validation_performance(results)
+
         return results
 
+    def analyze_validation_performance(self, results):
+        """Analyze validation set performance to identify potential issues"""
+        print("\nAnalyzing validation set performance...")
+
+        # Compare distributions
+        train_mean = np.mean(results['train']['true_values'])
+        train_std = np.std(results['train']['true_values'])
+        val_mean = np.mean(results['val']['true_values'])
+        val_std = np.std(results['val']['true_values'])
+        test_mean = np.mean(results['test']['true_values'])
+        test_std = np.std(results['test']['true_values'])
+
+        print(f"Training set: mean={train_mean:.2f}, std={train_std:.2f}")
+        print(f"Validation set: mean={val_mean:.2f}, std={val_std:.2f}")
+        print(f"Test set: mean={test_mean:.2f}, std={test_std:.2f}")
+
+        # Calculate distribution difference
+        train_val_diff = abs(train_mean - val_mean) / train_std
+        train_test_diff = abs(train_mean - test_mean) / train_std
+
+        print(f"Normalized mean difference (train-val): {train_val_diff:.4f}")
+        print(f"Normalized mean difference (train-test): {train_test_diff:.4f}")
+
+        # Identify outliers in validation set
+        val_predictions = results['val']['predictions']
+        val_true = results['val']['true_values']
+        errors = np.abs(val_predictions - val_true)
+        mean_error = np.mean(errors)
+        std_error = np.std(errors)
+        outlier_threshold = mean_error + 2 * std_error
+
+        outliers = np.where(errors > outlier_threshold)[0]
+        if len(outliers) > 0:
+            print(f"Found {len(outliers)} potential outliers in validation set")
+            print(f"Outlier threshold: {outlier_threshold:.4f}")
+            print(f"Top 5 largest errors:")
+            top_errors = np.argsort(errors)[-5:]
+            for idx in reversed(top_errors):
+                print(f"  True: {val_true[idx]:.2f}, Predicted: {val_predictions[idx]:.2f}, Error: {errors[idx]:.2f}")
+
+        # Plot distribution comparison
+        plt.figure(figsize=(10, 6))
+        plt.hist(results['train']['true_values'], alpha=0.5, bins=20, label='Training')
+        plt.hist(results['val']['true_values'], alpha=0.5, bins=20, label='Validation')
+        plt.hist(results['test']['true_values'], alpha=0.5, bins=20, label='Test')
+        plt.title('Label Distribution Comparison')
+        plt.xlabel('Label Value')
+        plt.ylabel('Frequency')
+        plt.legend()
+        plt.savefig(os.path.join(self.save_dir, 'distribution_comparison.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+
+        # Plot error distribution
+        plt.figure(figsize=(10, 6))
+        plt.hist(errors, bins=20)
+        plt.axvline(x=outlier_threshold, color='r', linestyle='--', label=f'Outlier threshold: {outlier_threshold:.2f}')
+        plt.title('Validation Set Error Distribution')
+        plt.xlabel('Absolute Error')
+        plt.ylabel('Frequency')
+        plt.legend()
+        plt.savefig(os.path.join(self.save_dir, 'validation_error_distribution.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+
     def plot_all_datasets_comparison(self, results):
-        """绘制所有数据集的预测与真实值对比图"""
+        """Plot predictions vs true values comparison for all datasets"""
         fig, axes = plt.subplots(1, 3, figsize=(18, 6))
 
         datasets = ['train', 'val', 'test']
-        titles = ['训练集', '验证集', '测试集']
+        titles = ['Training Set', 'Validation Set', 'Test Set']
         colors = ['blue', 'green', 'red']
 
         for i, (dataset, title, color) in enumerate(zip(datasets, titles, colors)):
             data = results[dataset]
             axes[i].scatter(data['true_values'], data['predictions'], alpha=0.6, s=30, c=color)
 
-            # 添加完美预测线
+            # Add perfect prediction line
             min_val = min(np.min(data['true_values']), np.min(data['predictions']))
             max_val = max(np.max(data['true_values']), np.max(data['predictions']))
             axes[i].plot([min_val, max_val], [min_val, max_val], 'k--', lw=2)
 
-            # 添加回归线
+            # Add regression line
             z = np.polyfit(data['true_values'], data['predictions'], 1)
             p = np.poly1d(z)
             axes[i].plot(data['true_values'], p(data['true_values']), 'g-', lw=1.5, alpha=0.7)
 
-            # 设置标题和标签
+            # Set title and labels
             axes[i].set_title(f'{title}\nR² = {data["r2"]:.4f}, RMSE = {data["rmse"]:.4f}')
-            axes[i].set_xlabel('真实值')
-            axes[i].set_ylabel('预测值')
+            axes[i].set_xlabel('True Values')
+            axes[i].set_ylabel('Predicted Values')
             axes[i].grid(True, alpha=0.3)
 
-            # 设置轴范围
+            # Set axis range
             margin = (max_val - min_val) * 0.05  # 5% margin
             axes[i].set_xlim(min_val - margin, max_val + margin)
             axes[i].set_ylim(min_val - margin, max_val + margin)
@@ -630,16 +763,16 @@ class Trainer:
         plt.close()
 
     def create_metrics_table(self, results):
-        """创建包含所有数据集性能指标的表格"""
-        # 准备表格数据
+        """Create a table with performance metrics for all datasets"""
+        # Prepare table data
         metrics_data = {
-            '数据集': ['训练集', '验证集', '测试集'],
-            '样本数量': [
+            'Dataset': ['Training Set', 'Validation Set', 'Test Set'],
+            'Sample Size': [
                 len(results['train']['true_values']),
                 len(results['val']['true_values']),
                 len(results['test']['true_values'])
             ],
-            '损失值': [
+            'Loss': [
                 results['train']['loss'],
                 results['val']['loss'],
                 results['test']['loss']
@@ -661,53 +794,53 @@ class Trainer:
             ]
         }
 
-        # 创建表格可视化
+        # Create table visualization
         fig, ax = plt.subplots(figsize=(12, 4))
         ax.axis('tight')
         ax.axis('off')
 
-        # 创建表格
+        # Create table
         table = ax.table(
             cellText=[
-                [f"{metrics_data['数据集'][i]}",
-                 f"{metrics_data['样本数量'][i]}",
-                 f"{metrics_data['损失值'][i]:.4f}",
+                [f"{metrics_data['Dataset'][i]}",
+                 f"{metrics_data['Sample Size'][i]}",
+                 f"{metrics_data['Loss'][i]:.4f}",
                  f"{metrics_data['R²'][i]:.4f}",
                  f"{metrics_data['RMSE'][i]:.4f}",
                  f"{metrics_data['MAE'][i]:.4f}"]
                 for i in range(3)
             ],
-            colLabels=['数据集', '样本数量', '损失值', 'R²', 'RMSE', 'MAE'],
+            colLabels=['Dataset', 'Sample Size', 'Loss', 'R²', 'RMSE', 'MAE'],
             loc='center',
             cellLoc='center'
         )
 
-        # 设置表格样式
+        # Set table style
         table.auto_set_font_size(False)
         table.set_fontsize(12)
         table.scale(1.2, 1.5)
 
-        # 设置表头样式
+        # Set header style
         for (i, j), cell in table.get_celld().items():
-            if i == 0:  # 表头行
+            if i == 0:  # Header row
                 cell.set_text_props(weight='bold', color='white')
                 cell.set_facecolor('#4472C4')
-            elif j == 0:  # 第一列
+            elif j == 0:  # First column
                 cell.set_text_props(weight='bold')
                 cell.set_facecolor('#D9E1F2')
-            elif i % 2 == 1:  # 奇数行
+            elif i % 2 == 1:  # Odd rows
                 cell.set_facecolor('#E9EDF4')
 
-        plt.title('模型在各数据集上的性能指标对比', fontsize=16, pad=20)
+        plt.title('Model Performance Metrics Across Datasets', fontsize=16, pad=20)
         plt.tight_layout()
         plt.savefig(os.path.join(self.save_dir, 'performance_metrics_table.png'), dpi=300, bbox_inches='tight')
         plt.close()
 
-        # 保存指标为CSV文件
+        # Save metrics as CSV
         metrics_df = pd.DataFrame(metrics_data)
         metrics_df.to_csv(os.path.join(self.save_dir, 'performance_metrics.csv'), index=False)
 
-        # 保存为HTML格式的表格
+        # Save as HTML table
         html_table = metrics_df.to_html(index=False)
         with open(os.path.join(self.save_dir, 'performance_metrics.html'), 'w') as f:
             f.write("<html><head><style>")
@@ -717,22 +850,22 @@ class Trainer:
             f.write("tr:nth-child(even) {background-color: #E9EDF4;}")
             f.write("tr:hover {background-color: #ddd;}")
             f.write("</style></head><body>")
-            f.write("<h2>模型性能指标表</h2>")
+            f.write("<h2>Model Performance Metrics</h2>")
             f.write(html_table)
             f.write("</body></html>")
 
     def train(self, num_epochs, eval_every=1, unfreeze_at_epoch=None):
-        """完整训练过程"""
+        """Complete training process"""
         for epoch in range(num_epochs):
             if self.early_stop:
                 print("Early stopping triggered!")
                 break
 
-            # 在指定epoch解冻部分CNN层
+            # Unfreeze part of CNN layers at specified epoch
             if unfreeze_at_epoch and epoch == unfreeze_at_epoch:
-                print(f"Epoch {epoch+1}: 解冻CNN的最后几层进行微调")
+                print(f"Epoch {epoch+1}: Unfreezing last layers of CNN for fine-tuning")
                 self.model.unfreeze_last_layers(num_layers=2)
-                # 调整学习率为原来的1/10，避免破坏预训练特征
+                # Adjust learning rate to 1/10 of original to avoid destroying pretrained features
                 for param_group in self.optimizer.param_groups:
                     param_group['lr'] = param_group['lr'] * 0.1
 
@@ -740,97 +873,97 @@ class Trainer:
             current_lr = self.optimizer.param_groups[0]['lr']
             print(f"Current learning rate: {current_lr:.6f}")
 
-            # 训练阶段
+            # Training phase
             train_loss = self.train_epoch()
 
-            # 验证阶段 (根据eval_every参数决定频率)
+            # Validation phase (based on eval_every parameter)
             if (epoch + 1) % eval_every == 0:
                 val_loss, predictions, true_values = self.validate(self.val_loader)
 
-                # 更新学习率
+                # Update learning rate
                 self.scheduler.step()
 
-                # 记录历史
+                # Record history
                 self.history['train_loss'].append(train_loss)
                 self.history['val_loss'].append(val_loss)
                 self.history['learning_rates'].append(current_lr)
 
-                # 打印结果
+                # Print results
                 print(f"Train Loss: {train_loss:.4f}")
                 print(f"Val Loss: {val_loss:.4f}")
 
-                # 计算验证集的R^2和RMSE
+                # Calculate validation R^2 and RMSE
                 r2 = self.calculate_r2(predictions, true_values)
                 rmse = np.sqrt(np.mean((predictions - true_values) ** 2))
                 print(f"Val R²: {r2:.4f}, RMSE: {rmse:.4f}")
 
-                # 保存最佳模型
+                # Save best model
                 if val_loss < self.history['best_val_loss']:
                     self.history['best_val_loss'] = val_loss
                     self.history['best_epoch'] = epoch + 1
                     self.save_checkpoint(f'best_model.pth')
                     print(f"New best model saved with validation loss: {val_loss:.4f}")
-                    # 重置早停计数器
+                    # Reset early stopping counter
                     self.patience_counter = 0
                 else:
-                    # 增加早停计数器
+                    # Increment early stopping counter
                     self.patience_counter += 1
                     if self.patience_counter >= self.patience:
                         print(f"Early stopping after {self.patience} epochs without improvement")
                         self.early_stop = True
 
-                # 每5个evaluation周期保存一次
+                # Save checkpoints every 5 evaluation cycles
                 if (epoch + 1) % (eval_every * 5) == 0:
                     self.save_checkpoint(f'epoch_{epoch+1}.pth')
 
-                # 绘制并保存当前预测结果图
+                # Plot and save current prediction results
                 self.plot_predictions(predictions, true_values, epoch+1)
 
-                # 每10个evaluation周期绘制学习曲线
+                # Plot learning curves every 10 evaluation cycles
                 if (epoch + 1) % (eval_every * 10) == 0:
                     self.plot_learning_curves()
 
-        # 保存训练历史
+        # Save training history
         self.save_history()
         print(f"Training completed! Best validation loss: {self.history['best_val_loss']:.4f} at epoch {self.history['best_epoch']}")
 
-        # 如果有测试集，使用最佳模型评估测试集
+        # If test set exists, evaluate it using the best model
         if self.test_loader:
             self.evaluate_test_set()
 
     def calculate_r2(self, predictions, true_values):
-        """计算R²决定系数"""
+        """Calculate R² coefficient of determination"""
         mean_true = np.mean(true_values)
         ss_tot = np.sum((true_values - mean_true) ** 2)
         ss_res = np.sum((true_values - predictions) ** 2)
-        r2 = 1 - (ss_res / (ss_tot + 1e-10))  # 添加小值防止除零
+        r2 = 1 - (ss_res / (ss_tot + 1e-10))  # add small value to prevent division by zero
         return r2
 
     def evaluate_test_set(self):
-        """评估测试集性能"""
+        """Evaluate test set performance"""
         print("\nEvaluating on test set...")
-        # 先加载最佳模型
+        # Load best model first
         self.load_checkpoint('best_model.pth')
 
-        # 评估测试集
+        # Evaluate test set
         test_loss, test_preds, test_true = self.validate(self.test_loader, desc='Testing')
 
-        # 计算测试集指标
+        # Calculate test set metrics
         test_r2 = self.calculate_r2(test_preds, test_true)
         test_rmse = np.sqrt(np.mean((test_preds - test_true) ** 2))
         test_mae = np.mean(np.abs(test_preds - test_true))
 
-        # 输出测试集结果
+        # Output test results
         print(f"Test Results:")
         print(f"  Loss: {test_loss:.4f}")
         print(f"  R²: {test_r2:.4f}")
         print(f"  RMSE: {test_rmse:.4f}")
         print(f"  MAE: {test_mae:.4f}")
 
-        # 绘制测试集预测图
+        # Plot test set predictions
         self.plot_predictions(test_preds, test_true, epoch='test', save_path=os.path.join(self.save_dir, 'test_predictions.png'))
 
-        # 保存测试集结果
+        # Save test results
         test_results = {
             'loss': float(test_loss),
             'r2': float(test_r2),
@@ -844,7 +977,7 @@ class Trainer:
             json.dump(test_results, f)
 
     def save_checkpoint(self, filename):
-        """保存检查点"""
+        """Save checkpoint"""
         checkpoint = {
             'model_state_dict': self.model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
@@ -854,37 +987,43 @@ class Trainer:
         torch.save(checkpoint, os.path.join(self.save_dir, filename))
 
     def load_checkpoint(self, filename):
-        """加载检查点"""
+        """Load checkpoint"""
         checkpoint = torch.load(os.path.join(self.save_dir, filename), map_location=self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        self.history = checkpoint['history']
+
+        # Only load optimizer and scheduler if they exist and training is continuing
+        if hasattr(self, 'optimizer') and 'optimizer_state_dict' in checkpoint:
+            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if hasattr(self, 'scheduler') and 'scheduler_state_dict' in checkpoint:
+            self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+
+        if 'history' in checkpoint:
+            self.history = checkpoint['history']
 
         return checkpoint
 
     def plot_predictions(self, predictions, true_values, epoch, save_path=None):
-        """绘制预测结果图"""
+        """Plot prediction results"""
         plt.figure(figsize=(10, 8))
 
-        # 计算性能指标
+        # Calculate performance metrics
         r2 = self.calculate_r2(predictions, true_values)
         rmse = np.sqrt(np.mean((predictions - true_values) ** 2))
 
-        # 绘制散点图
+        # Plot scatter plot
         plt.scatter(true_values, predictions, alpha=0.6, s=40)
 
-        # 添加完美预测线
+        # Add perfect prediction line
         min_val = min(np.min(true_values), np.min(predictions))
         max_val = max(np.max(true_values), np.max(predictions))
         plt.plot([min_val, max_val], [min_val, max_val], 'r--', lw=2)
 
-        # 添加回归线
+        # Add regression line
         z = np.polyfit(true_values, predictions, 1)
         p = np.poly1d(z)
         plt.plot(true_values, p(true_values), 'g-', lw=1.5, alpha=0.7)
 
-        # 添加图表标题和轴标签
+        # Add chart title and axis labels
         if isinstance(epoch, str):
             title = f'Predictions vs True Values - {epoch}'
         else:
@@ -894,12 +1033,12 @@ class Trainer:
         plt.ylabel('Predictions')
         plt.grid(True, alpha=0.3)
 
-        # 设置轴范围
+        # Set axis range
         margin = (max_val - min_val) * 0.05  # 5% margin
         plt.xlim(min_val - margin, max_val + margin)
         plt.ylim(min_val - margin, max_val + margin)
 
-        # 保存图像
+        # Save image
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight')
         else:
@@ -907,12 +1046,12 @@ class Trainer:
         plt.close()
 
     def plot_learning_curves(self):
-        """绘制学习曲线"""
+        """Plot learning curves"""
         epochs = range(1, len(self.history['train_loss']) + 1)
 
         plt.figure(figsize=(12, 10))
 
-        # 绘制损失曲线
+        # Plot loss curves
         plt.subplot(2, 1, 1)
         plt.plot(epochs, self.history['train_loss'], 'b-', label='Training Loss')
         plt.plot(epochs, self.history['val_loss'], 'r-', label='Validation Loss')
@@ -926,13 +1065,13 @@ class Trainer:
         plt.legend()
         plt.grid(True, alpha=0.3)
 
-        # 绘制学习率曲线
+        # Plot learning rate curve
         plt.subplot(2, 1, 2)
         plt.plot(epochs, self.history['learning_rates'], 'g-')
         plt.title('Learning Rate')
         plt.xlabel('Epochs')
         plt.ylabel('Learning Rate')
-        plt.yscale('log')  # 对数尺度更容易看出学习率变化
+        plt.yscale('log')  # log scale makes it easier to see learning rate changes
         plt.grid(True, alpha=0.3)
 
         plt.tight_layout()
@@ -940,9 +1079,9 @@ class Trainer:
         plt.close()
 
     def save_history(self):
-        """保存训练历史"""
+        """Save training history"""
         history_file = os.path.join(self.save_dir, 'training_history.json')
-        # 转换NumPy数组为Python列表以便JSON序列化
+        # Convert NumPy arrays to Python lists for JSON serialization
         serializable_history = {
             'train_loss': [float(x) for x in self.history['train_loss']],
             'val_loss': [float(x) for x in self.history['val_loss']],
@@ -954,30 +1093,30 @@ class Trainer:
             json.dump(serializable_history, f)
 
 def visualize_preprocessing(image_path, save_dir):
-    """可视化不同预处理技术的效果"""
-    # 原始图像
+    """Visualize the effect of different preprocessing techniques"""
+    # Original image
     original = Image.open(image_path).convert('RGB')
 
-    # 创建保存目录
+    # Create save directory
     os.makedirs(save_dir, exist_ok=True)
 
-    # 保存原始图像
+    # Save original image
     original.save(os.path.join(save_dir, '01_original.png'))
 
-    # 应用各种预处理
-    # 1. 固定角度旋转
+    # Apply various preprocessing methods
+    # 1. Fixed angle rotation
     rotated = FixedRotation(p=1.0)(original)
     rotated.save(os.path.join(save_dir, '02_rotated.png'))
 
-    # 2. 自适应边缘增强
+    # 2. Adaptive edge enhancement
     edge_enhanced = AdaptiveEdgeEnhancer(p=1.0)(original)
     edge_enhanced.save(os.path.join(save_dir, '03_edge_enhanced.png'))
 
-    # 3. 对比度增强
+    # 3. Contrast enhancement
     contrast_enhanced = ContrastTextureEnhancer(p=1.0)(original)
     contrast_enhanced.save(os.path.join(save_dir, '04_contrast_enhanced.png'))
 
-    # 4. 完整增强链
+    # 4. Complete enhancement chain
     transform = transforms.Compose([
         AdaptiveEdgeEnhancer(p=1.0),
         ContrastTextureEnhancer(p=1.0)
@@ -985,10 +1124,10 @@ def visualize_preprocessing(image_path, save_dir):
     fully_enhanced = transform(original)
     fully_enhanced.save(os.path.join(save_dir, '05_fully_enhanced.png'))
 
-    # 5. 对比可视化
+    # 5. Comparison visualization
     fig, axes = plt.subplots(1, 5, figsize=(20, 5))
 
-    # 显示图像
+    # Display images
     axes[0].imshow(np.array(original))
     axes[0].set_title('Original')
 
@@ -1004,7 +1143,7 @@ def visualize_preprocessing(image_path, save_dir):
     axes[4].imshow(np.array(fully_enhanced))
     axes[4].set_title('Fully Enhanced')
 
-    # 移除刻度
+    # Remove ticks
     for ax in axes:
         ax.axis('off')
 
@@ -1015,20 +1154,20 @@ def visualize_preprocessing(image_path, save_dir):
     print(f"Preprocessing visualizations saved to {save_dir}")
 
 def inference_example(model_path, image_path, device='cuda'):
-    """推理示例，展示如何使用保存的模型进行预测"""
-    # 加载模型
+    """Inference example, showing how to use the saved model for prediction"""
+    # Load model
     device = torch.device(device if torch.cuda.is_available() else 'cpu')
 
-    # 加载检查点
+    # Load checkpoint
     checkpoint = torch.load(model_path, map_location=device)
 
-    # 创建模型实例
+    # Create model instance
     model = FrozenCNNRegressor(backbone='densenet121', pretrained=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.to(device)
     model.eval()
 
-    # 图像预处理
+    # Image preprocessing
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -1036,49 +1175,49 @@ def inference_example(model_path, image_path, device='cuda'):
                              std=[0.229, 0.224, 0.225])
     ])
 
-    # 加载图像
+    # Load image
     image = Image.open(image_path).convert('RGB')
     input_tensor = transform(image).unsqueeze(0).to(device)
 
-    # 执行推理
+    # Perform inference
     with torch.no_grad():
         prediction = model(input_tensor).item()
 
     return prediction
 
 def main():
-    """主函数"""
-    # 设置随机种子
+    """Main function"""
+    # Set random seed
     torch.manual_seed(42)
     np.random.seed(42)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(42)
 
-    # 设置设备
+    # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # 设置路径 - 适应新的数据集结构
+    # Set paths - adapt to the new dataset structure
     base_dir = "/home/lsy/gbx_cropping_ws/src/image_tools/only_fifteen"
-    raw_dataset_path = os.path.join(base_dir, "dataset")            # 包含所有原始图片和labels.csv的目录
-    labels_file = os.path.join(raw_dataset_path, "labels.csv")      # 标签文件路径
-    split_dataset_path = os.path.join(base_dir, "split_dataset")    # 分割后数据集的存放路径
+    raw_dataset_path = os.path.join(base_dir, "dataset")            # Directory with all original images and labels.csv
+    labels_file = os.path.join(raw_dataset_path, "labels.csv")      # Labels file path
+    split_dataset_path = os.path.join(base_dir, "split_dataset")    # Path to store split dataset
     augmented_dataset_path = os.path.join(base_dir, "augmented_dataset")
     save_dir = "checkpoints"
     os.makedirs(save_dir, exist_ok=True)
 
-    # 检查标签文件是否存在
+    # Check if labels file exists
     if not os.path.exists(labels_file):
         raise ValueError(f"Labels file not found: {labels_file}")
 
     print(f"Found labels file: {labels_file}")
 
-    # 创建实验文件夹，带有时间戳
+    # Create experiment folder with timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     experiment_dir = os.path.join(save_dir, f"frozen_cnn_experiment_{timestamp}")
     os.makedirs(experiment_dir, exist_ok=True)
 
-    # 分割数据集
+    # Split dataset
     print("Splitting dataset into train, validation, and test sets...")
     splitter = DatasetSplitter(
         source_dir=raw_dataset_path,
@@ -1090,32 +1229,35 @@ def main():
     )
     splitter.split_dataset()
 
-    # 首先进行数据增强
-    augmenter = DatasetAugmenter(augmentation_factor=5)  # 每张图片生成5个增强版本
-
-    # 增强训练集
+    # First do data augmentation
     print("Augmenting training set...")
-    augmenter.augment_dataset(
+    train_augmenter = DatasetAugmenter(augmentation_factor=15, is_training=True)  # Generate 5 augmented versions for each image
+    train_augmenter.augment_dataset(
         os.path.join(split_dataset_path, 'train'),
-        os.path.join(augmented_dataset_path, 'train')
+        os.path.join(augmented_dataset_path, 'train'),
+        is_training=True
     )
 
-    # 增强验证集
+    # Augment validation set (with light transformation)
     print("Augmenting validation set...")
-    augmenter.augment_dataset(
+    val_augmenter = DatasetAugmenter(augmentation_factor=15, is_training=True)  # Only original images for validation
+    val_augmenter.augment_dataset(
         os.path.join(split_dataset_path, 'val'),
-        os.path.join(augmented_dataset_path, 'val')
+        os.path.join(augmented_dataset_path, 'val'),
+        is_training=True
     )
 
-    # 增强测试集
+    # Augment test set (with light transformation)
     print("Augmenting test set...")
-    augmenter.augment_dataset(
+    test_augmenter = DatasetAugmenter(augmentation_factor=5, is_training=False)  # Only original images for test
+    test_augmenter.augment_dataset(
         os.path.join(split_dataset_path, 'test'),
-        os.path.join(augmented_dataset_path, 'test')
+        os.path.join(augmented_dataset_path, 'test'),
+        is_training=False
     )
 
-    # 可视化一些预处理步骤
-    # 找到第一张图片进行可视化
+    # Visualize some preprocessing steps
+    # Find the first image for visualization
     df = pd.read_csv(labels_file)
     if len(df) > 0:
         first_image = df.iloc[0]['image_name']
@@ -1130,7 +1272,7 @@ def main():
     else:
         print("No images found in the labels file")
 
-    # 设置用于训练的数据转换
+    # Set up data transforms for training
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -1138,7 +1280,7 @@ def main():
                              std=[0.229, 0.224, 0.225])
     ])
 
-    # 加载增强后的数据集
+    # Load augmented datasets
     train_dataset = RegressionDataset(
         os.path.join(augmented_dataset_path, 'train'),
         transform=transform
@@ -1154,7 +1296,7 @@ def main():
 
     print(f"Dataset sizes: Train={len(train_dataset)}, Val={len(val_dataset)}, Test={len(test_dataset)}")
 
-    # 创建数据加载器
+    # Create data loaders
     train_loader = DataLoader(
         train_dataset,
         batch_size=32,
@@ -1177,19 +1319,19 @@ def main():
         pin_memory=True
     )
 
-    # 选择要使用的骨干网络
-    backbone = 'densenet121'  # 可以选择: 'resnet34', 'densenet121', 'mobilenet_v2' 等
+    # Choose which backbone to use
+    backbone = 'densenet121'  # Options: 'resnet34', 'densenet121', 'mobilenet_v2', etc.
 
-    # 创建冻结CNN+FC模型
-    model = FrozenCNNRegressor(backbone=backbone, pretrained=True, initial_value=15.0)
+    # Create frozen CNN+FC model with increased dropout
+    model = FrozenCNNRegressor(backbone=backbone, pretrained=True, initial_value=15.0, dropout_rate=0.5)
 
-    # 验证哪些层是冻结的
+    # Verify which layers are frozen
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"创建了使用{backbone}骨干网络的冻结CNN+FC模型")
-    print(f"可训练参数: {trainable_params:,} / 总参数: {total_params:,} ({trainable_params/total_params:.2%})")
+    print(f"Created frozen CNN+FC model using {backbone} backbone")
+    print(f"Trainable parameters: {trainable_params:,} / Total parameters: {total_params:,} ({trainable_params/total_params:.2%})")
 
-    # 创建训练器
+    # Create trainer
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
@@ -1200,12 +1342,13 @@ def main():
         save_dir=experiment_dir
     )
 
-    # 训练模型，在80 epoch时解冻最后几层进行微调
+    # Train model, unfreeze last few layers at epoch 80 for fine-tuning
     trainer.train(num_epochs=200, eval_every=1, unfreeze_at_epoch=80)
 
+    # Evaluate model on all datasets
     trainer.evaluate_all_datasets()
 
-    # 保存配置信息
+    # Save configuration information
     config = {
         'backbone': backbone,
         'augmentation_factor': 5,
@@ -1214,26 +1357,34 @@ def main():
         'num_epochs': 200,
         'unfreeze_at_epoch': 80,
         'experiment_timestamp': timestamp,
-        'model_type': 'FrozenCNN_with_FC'
+        'model_type': 'FrozenCNN_with_FC',
+        'dropout_rate': 0.5,
+        'stratified_sampling': True
     }
 
     with open(os.path.join(experiment_dir, 'config.json'), 'w') as f:
         json.dump(config, f)
 
-    # 创建推理示例代码
+    # Create inference example code
     inference_code = """
-# 推理示例代码
+# Inference example code
 import torch
 from torchvision import transforms
 from PIL import Image
 
 def predict_image(model_path, image_path, device='cuda'):
-    # 加载模型
+    # Load model
     device = torch.device(device if torch.cuda.is_available() else 'cpu')
-    model = torch.load(model_path, map_location=device)
+    checkpoint = torch.load(model_path, map_location=device)
+    
+    # Create model instance
+    from your_model_file import FrozenCNNRegressor  # Import your model class
+    model = FrozenCNNRegressor(backbone='densenet121', pretrained=False)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.to(device)
     model.eval()
     
-    # 图像预处理
+    # Image preprocessing
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -1241,26 +1392,26 @@ def predict_image(model_path, image_path, device='cuda'):
                              std=[0.229, 0.224, 0.225])
     ])
     
-    # 加载图像
+    # Load image
     image = Image.open(image_path).convert('RGB')
     input_tensor = transform(image).unsqueeze(0).to(device)
     
-    # 执行推理
+    # Perform inference
     with torch.no_grad():
         prediction = model(input_tensor).item()
     
     return prediction
 
-# 使用示例
+# Usage example
 # prediction = predict_image('best_model.pth', 'test_image.jpg')
-# print(f"预测值: {prediction:.2f}")
+# print(f"Predicted value: {prediction:.2f}")
 """
 
     with open(os.path.join(experiment_dir, 'inference_example.py'), 'w') as f:
         f.write(inference_code)
 
-    print(f"训练完成！结果保存在 {experiment_dir}")
-    print("提示: 使用保存的'best_model.pth'文件进行推理，示例代码已保存到inference_example.py")
+    print(f"Training complete! Results saved to {experiment_dir}")
+    print("Tip: Use the saved 'best_model.pth' file for inference, example code saved to inference_example.py")
 
 if __name__ == "__main__":
     main()
