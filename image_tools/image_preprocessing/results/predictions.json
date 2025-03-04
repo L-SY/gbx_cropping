@@ -1,0 +1,12 @@
+{
+    "image_path": "/home/lsy/gbx_cropping_ws/src/image_tools/image_preprocessing/image.png",
+    "predictions": {
+        "top_left": 14.94576358795166,
+        "top_right": 15.72387981414795,
+        "bottom_left": 14.147478103637695,
+        "bottom_right": 14.473793029785156
+    },
+    "min_val": 14.147478103637695,
+    "max_val": 15.72387981414795,
+    "average": 14.822728633880615
+}
