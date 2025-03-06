@@ -207,8 +207,8 @@ class RegressionDataset(Dataset):
 def main():
     # 设置路径
     image_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/cropping"
-    csv_path = "/image_tools/image_train/raw_images/data_with_compute_rate.csv"
-    output_base_path = "/image_tools/image_train/dataset"
+    csv_path = "/image_tools/first_batch_of_samples/raw_images/data_with_compute_rate.csv"
+    output_base_path = "/image_tools/first_batch_of_samples/dataset"
 
     # 创建数据组织器
     organizer = ImageDatasetOrganizer(image_folder, csv_path, output_base_path)

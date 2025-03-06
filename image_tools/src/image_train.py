@@ -262,7 +262,7 @@ def main():
     ])
 
     # 设置路径
-    dataset_path = "/image_tools/image_train/dataset"
+    dataset_path = "/image_tools/first_batch_of_samples/dataset"
     save_dir = "../image_train/checkpoints"
     os.makedirs(save_dir, exist_ok=True)
 

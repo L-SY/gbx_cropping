@@ -143,4 +143,4 @@ def order_points(pts):
     return rect
 
 # 使用函数
-extract_and_split_square("/image_tools/image_train/image_preprocessing/image.png")
+extract_and_split_square("/image_tools/first_batch_of_samples/image_preprocessing/image.png")
