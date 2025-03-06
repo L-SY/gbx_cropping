@@ -17,8 +17,8 @@ include_directories(
 )
 
 catkin_install_python(PROGRAMS
-        src/image_saver.py
-        src/image_cropping.py
-        src/image_cropping.py
+        src/image_cropping/image_saver.py
+        src/image_cropping/image_cropping.py
+        src/image_cropping/image_cropping.py
         DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

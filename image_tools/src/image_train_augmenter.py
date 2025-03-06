@@ -785,7 +785,7 @@ def main():
     base_dir = "/home/lsy/gbx_cropping_ws/src/image_tools"
     dataset_path = os.path.join(base_dir, "dataset")  # 包含 train, val, test 子文件夹
     augmented_dataset_path = os.path.join(base_dir, "augmented_dataset")
-    save_dir = "checkpoints"
+    save_dir = "../image_train/checkpoints"
     os.makedirs(save_dir, exist_ok=True)
 
     # 验证数据集目录结构

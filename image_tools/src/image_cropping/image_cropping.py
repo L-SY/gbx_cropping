@@ -169,9 +169,9 @@ def process_folder(input_folder, output_folder, debug_folder, undetected_folder)
     print(f"检测率: {detection_rate:.2f}%")
 
 if __name__ == "__main__":
-    input_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/raw_images"
-    output_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/cropping"
-    debug_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/debug"
-    undetected_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/undetected"
+    input_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/only_fifteen/raw_images_90"
+    output_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/only_fifteen/cropping"
+    debug_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/only_fifteen/debug"
+    undetected_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/only_fifteen/undetected"
 
     process_folder(input_folder, output_folder, debug_folder, undetected_folder)

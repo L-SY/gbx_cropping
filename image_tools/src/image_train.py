@@ -262,8 +262,8 @@ def main():
     ])
 
     # 设置路径
-    dataset_path = "/home/lsy/gbx_cropping_ws/src/image_tools/dataset"
-    save_dir = "checkpoints"
+    dataset_path = "/image_tools/image_train/dataset"
+    save_dir = "../image_train/checkpoints"
     os.makedirs(save_dir, exist_ok=True)
 
     # 加载数据集

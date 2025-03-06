@@ -110,8 +110,8 @@ def process_images(input_folder, output_folder):
     cv2.destroyAllWindows()
 
 def main():
-    input_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/undetected"
-    output_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/cropping"
+    input_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/only_fifteen/undetected"
+    output_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/only_fifteen/cropping"
 
     process_images(input_folder, output_folder)
 

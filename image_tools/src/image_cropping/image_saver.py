@@ -43,9 +43,9 @@ if __name__ == "__main__":
     rospy.init_node("image_saver", anonymous=True)
 
     # 从参数服务器读取起始编号
-    start_number = rospy.get_param("~start_number", 0)
+    start_number = rospy.get_param("~start_number", 72)
     image_counter = start_number
-    save_path = rospy.get_param("~save_path", "./images")
+    save_path = rospy.get_param("~save_path", "/home/lsy/gbx_cropping_ws/src/image_tools/only_fifteen/raw_images_90")
 
     # 创建CvBridge实例
     bridge = CvBridge()
