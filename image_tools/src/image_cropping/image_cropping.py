@@ -169,7 +169,7 @@ def process_folder(input_folder, output_folder, debug_folder, undetected_folder)
     print(f"检测率: {detection_rate:.2f}%")
 
 if __name__ == "__main__":
-    input_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/second_batch_of_samples/raw_images_90"
+    input_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/second_batch_of_samples/raw_images"
     output_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/second_batch_of_samples/cropping"
     debug_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/second_batch_of_samples/debug"
     undetected_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/second_batch_of_samples/undetected"

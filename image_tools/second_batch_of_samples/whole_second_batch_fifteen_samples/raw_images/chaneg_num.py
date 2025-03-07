@@ -1,7 +1,7 @@
 import os
 import re
 
-folder_path = '.'  # 当前文件夹，您可以修改为您的图片所在文件夹路径
+folder_path = ''  # 当前文件夹，您可以修改为您的图片所在文件夹路径
 
 # 获取所有文件
 all_files = os.listdir(folder_path)

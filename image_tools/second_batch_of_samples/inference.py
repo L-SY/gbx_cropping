@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-批量图像纹理分析工具
-用法: python inference.py --model_path MODEL_PATH --image_dir IMAGE_DIR [--output_dir OUTPUT_DIR] [--device DEVICE]
+Batch Image Texture Analysis Tool
+Usage: python inference.py --model_path MODEL_PATH --image_dir IMAGE_DIR [--output_dir OUTPUT_DIR] [--device DEVICE] [--csv_path CSV_PATH]
 """
 
 import os
@@ -22,15 +22,16 @@ from matplotlib.colors import LinearSegmentedColormap
 import cv2
 from tqdm import tqdm
 import glob
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# 定义模型类 - 直接在这里内联定义，而不是从外部导入
+# Define model class - Modified to match the saved model structure
 class FrozenCNNRegressor(nn.Module):
-    """使用冻结CNN特征提取器和可训练FC层的纹理回归模型"""
+    """Texture regression model using frozen CNN feature extractor and trainable FC layers"""
     def __init__(self, backbone='densenet121', pretrained=True, initial_value=15.0):
         super(FrozenCNNRegressor, self).__init__()
 
-        # 加载预训练骨干网络
+        # Load pre-trained backbone network
         if backbone == 'densenet121':
             base_model = models.densenet121(weights='DEFAULT' if pretrained else None)
             self.features = base_model.features
@@ -41,7 +42,7 @@ class FrozenCNNRegressor(nn.Module):
             feature_dim = base_model.classifier.in_features  # 1664
         elif backbone == 'resnet18':
             base_model = models.resnet18(weights='DEFAULT' if pretrained else None)
-            # 移除全局平均池化层和全连接层
+            # Remove global avg pooling and fc layers
             self.features = nn.Sequential(*list(base_model.children())[:-2])
             feature_dim = 512
         elif backbone == 'resnet34':
@@ -57,89 +58,96 @@ class FrozenCNNRegressor(nn.Module):
             self.features = base_model.features
             feature_dim = 1280
         else:
-            raise ValueError(f"不支持的骨干网络: {backbone}")
+            raise ValueError(f"Unsupported backbone: {backbone}")
 
-        # 全局平均池化层
+        # Global average pooling layer
         self.global_pool = nn.AdaptiveAvgPool2d(1)
 
-        # 带有L2正则化效果的回归头 (类似Ridge回归)
+        # Regression head with L2 regularization effect (similar to Ridge regression) - Modified to match saved model structure
         self.regressor = nn.Sequential(
             nn.Flatten(),
             nn.Linear(feature_dim, 256),
             nn.BatchNorm1d(256),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(256, 64),
-            nn.BatchNorm1d(64),
+            nn.Linear(256, 128),  # Changed to 128
+            nn.BatchNorm1d(128),  # Changed to 128
             nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(64, 1)
+            nn.Linear(128, 64),   # Added layer
+            nn.BatchNorm1d(64),   # Added layer
+            nn.ReLU(),            # Added layer
+            nn.Dropout(0.2),      # Added layer
+            nn.Linear(64, 1)      # Final output layer
         )
 
-        # 初始化最后一层的偏置为指定值
+        # Initialize the bias of the final layer to the specified value
         final_layer = self.regressor[-1]
         nn.init.constant_(final_layer.bias, initial_value)
 
     def forward(self, x):
-        # 提取特征
+        # Extract features
         features = self.features(x)
 
-        # 全局平均池化
+        # Global average pooling
         pooled = self.global_pool(features)
 
-        # 回归预测
+        # Regression prediction
         output = self.regressor(pooled).squeeze()
 
         return output
 
 def load_model(model_path, device='cuda'):
-    """加载预训练模型 - 使用更安全的方式"""
+    """Load pretrained model - Using a safer approach"""
     device = torch.device(device if torch.cuda.is_available() else 'cpu')
 
     try:
-        # 首先尝试只加载模型权重 - 更安全的方式
+        # First try to load model weights only - safer approach
         try:
-            # 创建空模型
+            print("Attempting to load model in safe mode (weights_only=True)...")
+            # Create empty model
             model = FrozenCNNRegressor(backbone='densenet121', pretrained=False)
 
-            # 尝试使用weights_only=True的安全模式加载
+            # Try to load in safe mode with weights_only=True
             checkpoint = torch.load(model_path, map_location=device, weights_only=True)
 
-            # 如果是状态字典，直接加载
+            # If it's a state dict, load directly
             if not isinstance(checkpoint, dict) or 'model_state_dict' not in checkpoint:
-                model.load_state_dict(checkpoint)
+                model.load_state_dict(checkpoint, strict=False)  # Use strict=False to allow partial loading
             else:
-                model.load_state_dict(checkpoint['model_state_dict'])
+                model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+
+            print("Model loaded successfully in safe mode")
 
         except Exception as e:
-            print(f"使用安全模式加载失败，尝试兼容模式: {e}")
-            # 如果安全模式失败，使用兼容模式(不推荐，但确保能加载旧模型)
-            print("警告: 使用不安全的加载方式，确保您信任此模型文件")
+            print(f"Safe mode loading failed, trying compatibility mode: {e}")
+            # If safe mode fails, use compatibility mode (not recommended, but ensures old models can be loaded)
+            print("WARNING: Using unsafe loading method, ensure you trust this model file")
             checkpoint = torch.load(model_path, map_location=device)
 
-            # 如果是完整模型而非字典
+            # If it's a complete model rather than a dict
             if not isinstance(checkpoint, dict):
                 model = checkpoint
-            # 如果是包含state_dict的字典
+            # If it's a dict containing state_dict
             elif 'model_state_dict' in checkpoint:
                 model = FrozenCNNRegressor(backbone='densenet121', pretrained=False)
-                model.load_state_dict(checkpoint['model_state_dict'])
+                model.load_state_dict(checkpoint['model_state_dict'], strict=False)
             else:
-                # 如果是直接的state_dict
+                # If it's a direct state_dict
                 model = FrozenCNNRegressor(backbone='densenet121', pretrained=False)
-                model.load_state_dict(checkpoint)
+                model.load_state_dict(checkpoint, strict=False)
 
         model = model.to(device)
         model.eval()
-        print(f"模型成功加载: {model_path}")
+        print(f"Model successfully loaded: {model_path}")
         return model
 
     except Exception as e:
-        print(f"模型加载失败: {e}")
+        print(f"Model loading failed: {e}")
         sys.exit(1)
 
 def get_transform():
-    """获取图像变换"""
+    """Get image transformations"""
     return transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -148,18 +156,18 @@ def get_transform():
     ])
 
 def predict_single_image(model, image_path, transform, device):
-    """预测单个图像"""
+    """Predict for a single image"""
     try:
-        # 加载图像
+        # Load image
         image = Image.open(image_path).convert('RGB')
 
-        # 保存原始尺寸用于后续可视化
+        # Save original size for later visualization
         original_size = image.size
 
-        # 应用变换
+        # Apply transformations
         input_tensor = transform(image).unsqueeze(0).to(device)
 
-        # 执行推理
+        # Perform inference
         with torch.no_grad():
             prediction = model(input_tensor).item()
 
@@ -171,7 +179,7 @@ def predict_single_image(model, image_path, transform, device):
             'status': 'success'
         }
     except Exception as e:
-        print(f"处理图像失败 {image_path}: {e}")
+        print(f"Failed to process image {image_path}: {e}")
         return {
             'path': image_path,
             'prediction': None,
@@ -180,230 +188,360 @@ def predict_single_image(model, image_path, transform, device):
         }
 
 def generate_heatmap(prediction, min_val=0, max_val=30):
-    """根据预测值生成热力图颜色"""
-    # 创建自定义colormap，从蓝色(低值)到红色(高值)
+    """Generate heatmap color based on prediction value"""
+    # Create custom colormap, from blue (low) to red (high)
     colors = [(0, 0, 1), (0, 1, 1), (0, 1, 0), (1, 1, 0), (1, 0, 0)]
     cmap = LinearSegmentedColormap.from_list('custom_cmap', colors, N=100)
 
-    # 将预测值归一化到0-1范围
+    # Normalize prediction to 0-1 range
     normalized = (prediction - min_val) / (max_val - min_val)
-    normalized = np.clip(normalized, 0, 1)  # 确保在0-1范围内
+    normalized = np.clip(normalized, 0, 1)  # Ensure it's in 0-1 range
 
-    # 获取RGB颜色
-    rgb_color = cmap(normalized)[:3]  # 去除alpha通道
+    # Get RGB color
+    rgb_color = cmap(normalized)[:3]  # Remove alpha channel
 
-    # 将RGB转换为0-255整数
+    # Convert RGB to 0-255 integers
     color_8bit = tuple(int(c * 255) for c in rgb_color)
 
     return color_8bit, normalized
 
-def create_visualization(result, output_path, global_min=0, global_max=30):
-    """创建结果可视化"""
+def create_visualization(result, output_path, global_min=0, global_max=30, reference_value=None):
+    """Create result visualization"""
     if result['status'] != 'success':
         return
 
     image = result['image']
     prediction = result['prediction']
 
-    # 使用全局最小值和最大值计算颜色
+    # Calculate color using global min and max
     color, normalized = generate_heatmap(prediction, global_min, global_max)
 
-    # 创建图像
+    # Create figure
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    # 显示原始图像
+    # Show original image
     ax.imshow(image)
 
-    # 添加预测值文本，设置颜色，使其在任何背景下都可见
-    text = f"预测值: {prediction:.2f}"
+    # Add prediction value text with color, make it visible on any background
+    if reference_value is not None:
+        error = prediction - reference_value
+        text = f"Predicted: {prediction:.2f} | Reference: {reference_value:.2f} | Error: {error:.2f}"
+    else:
+        text = f"Predicted: {prediction:.2f}"
+
     ax.text(10, 30, text, fontsize=16, weight='bold',
             bbox=dict(facecolor='white', alpha=0.7, edgecolor='black', boxstyle='round,pad=0.5'))
 
-    # 添加色条指示器
+    # Add colorbar indicator
     sm = plt.cm.ScalarMappable(cmap=plt.cm.coolwarm,
                                norm=plt.Normalize(vmin=global_min, vmax=global_max))
     sm.set_array([])
     cbar = plt.colorbar(sm, ax=ax)
-    cbar.set_label('预测值范围')
+    cbar.set_label('Prediction Range')
 
-    # 在色条上标记当前值
+    # Mark current value on the colorbar
     cbar.ax.plot([0, 1], [prediction, prediction], 'k-', linewidth=2)
 
-    # 关闭坐标轴
+    # Turn off axes
     ax.axis('off')
 
-    # 设置标题
+    # Set title
     filename = os.path.basename(result['path'])
-    ax.set_title(f"文件: {filename} - 预测值: {prediction:.2f}", fontsize=14)
+    ax.set_title(f"File: {filename} - Prediction: {prediction:.2f}", fontsize=14)
 
-    # 保存图像
+    # Save image
     plt.savefig(output_path, dpi=200, bbox_inches='tight')
     plt.close(fig)
 
-def create_gallery(results, output_dir, rows=5, global_min=None, global_max=None):
-    """创建图像库"""
-    # 跳过处理失败的图像
+def create_gallery(results, output_dir, rows=5, global_min=None, global_max=None, reference_values=None, image_id_map=None):
+    """Create image gallery"""
+    # Skip failed images
     valid_results = [r for r in results if r['status'] == 'success']
 
     if not valid_results:
-        print("没有有效结果可以生成图像库")
+        print("No valid results to generate gallery")
         return
 
-    # 如果未指定全局范围，则从数据计算
+    # If global range not specified, calculate from data
     if global_min is None:
         global_min = min(r['prediction'] for r in valid_results)
     if global_max is None:
         global_max = max(r['prediction'] for r in valid_results)
 
-    # 按预测值排序
+    # Sort by prediction value
     valid_results.sort(key=lambda x: x['prediction'])
 
-    # 计算布局
+    # Calculate layout
     n_images = len(valid_results)
-    cols = (n_images + rows - 1) // rows  # 向上取整
+    cols = (n_images + rows - 1) // rows  # Ceiling division
 
-    # 创建画布
+    # Create canvas
     fig, axes = plt.subplots(rows, cols, figsize=(cols*4, rows*4))
     if n_images == 1:
         axes = np.array([axes])
     axes = axes.flatten()
 
-    # 添加每个图像
+    # Add each image
     for i, result in enumerate(valid_results):
         if i < len(axes):
             ax = axes[i]
             ax.imshow(result['image'])
 
-            # 添加预测值文本
+            # Add prediction value text
             pred = result['prediction']
             filename = os.path.basename(result['path'])
-            ax.set_title(f"{filename}\n预测值: {pred:.2f}", fontsize=10)
 
-            # 设置边框颜色反映预测值
+            # Check if we have a reference value for this image using image_id_map
+            ref_value = None
+            if image_id_map is not None and result['path'] in image_id_map:
+                id_val = image_id_map[result['path']]
+                if id_val in reference_values:
+                    ref_value = reference_values[id_val]
+
+            if ref_value is not None:
+                error = pred - ref_value
+                title = f"{filename}\nPred: {pred:.2f} | Ref: {ref_value:.2f} | Err: {error:.2f}"
+            else:
+                title = f"{filename}\nPrediction: {pred:.2f}"
+
+            ax.set_title(title, fontsize=10)
+
+            # Set border color reflecting prediction value
             color, _ = generate_heatmap(pred, global_min, global_max)
             for spine in ax.spines.values():
                 spine.set_color(np.array(color)/255)
                 spine.set_linewidth(5)
 
-            # 关闭坐标轴
+            # Turn off axes
             ax.axis('off')
 
-    # 隐藏多余的子图
+    # Hide extra subplots
     for i in range(n_images, len(axes)):
         axes[i].axis('off')
 
-    # 调整布局
+    # Adjust layout
     plt.tight_layout()
 
-    # 添加色条
+    # Add colorbar
     sm = plt.cm.ScalarMappable(cmap=plt.cm.coolwarm,
                                norm=plt.Normalize(vmin=global_min, vmax=global_max))
     sm.set_array([])
     cbar = fig.colorbar(sm, ax=axes, orientation='horizontal',
                         pad=0.01, fraction=0.05, aspect=40)
-    cbar.set_label('预测值范围')
+    cbar.set_label('Prediction Range')
 
-    # 添加标题
-    fig.suptitle(f'批量预测结果总览 - 共{n_images}张图像', fontsize=16, y=1.02)
+    # Add title
+    fig.suptitle(f'Batch Prediction Results Overview - {n_images} Images', fontsize=16, y=1.02)
 
-    # 保存图像库
+    # Save gallery
     gallery_path = os.path.join(output_dir, 'results_gallery.png')
     plt.savefig(gallery_path, dpi=150, bbox_inches='tight')
-    print(f"图像库已保存到: {gallery_path}")
+    print(f"Gallery saved to: {gallery_path}")
     plt.close(fig)
 
-def process_image_folder(model_path, image_dir, output_dir=None, device='cuda', n_workers=4):
-    """处理整个图像文件夹"""
+def extract_id_from_filename(filename):
+    """Extract numeric ID from filename like 'cropped_raw_1.jpg'"""
+    # Pattern to match numbers at the end of the filename before extension
+    match = re.search(r'(\d+)(?:\.[^.]+)?$', filename)
+    if match:
+        return match.group(1)
+    return None
+
+def process_image_folder(model_path, image_dir, output_dir=None, device='cuda', n_workers=4, csv_path=None):
+    """Process entire image folder"""
     start_time = time.time()
 
-    # 设置输出目录
+    # Set output directory
     if output_dir is None:
         output_dir = os.path.join(os.path.dirname(image_dir), 'inference_results')
 
-    # 创建输出目录
+    # Create output directories
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(os.path.join(output_dir, 'visualizations'), exist_ok=True)
 
-    # 加载模型
+    # Load reference values from CSV if provided
+    reference_values = None
+    if csv_path and os.path.exists(csv_path):
+        try:
+            print(f"Loading reference values from: {csv_path}")
+            csv_data = pd.read_csv(csv_path)
+
+            # Print out the columns in the CSV file for debugging
+            print(f"CSV columns: {list(csv_data.columns)}")
+
+            # Check for ID column
+            id_col = None
+            for col_name in ['ID', 'Id', 'id', 'sample_id', 'sampleid', 'sample', 'SampleId']:
+                if col_name in csv_data.columns:
+                    id_col = col_name
+                    print(f"Using '{id_col}' as ID column")
+                    break
+
+            # Check for rate/value column
+            rate_col = None
+            for col_name in ['ComputedRate', 'computedrate', 'computed_rate', 'rate', 'density', 'value', 'prediction', 'target', 'label', 'Rate']:
+                if col_name in csv_data.columns:
+                    rate_col = col_name
+                    print(f"Using '{rate_col}' as reference value column")
+                    break
+
+            # Create a dictionary of ID -> reference value
+            if id_col is not None and rate_col is not None:
+                reference_values = {}
+
+                for _, row in csv_data.iterrows():
+                    if pd.notna(row[id_col]) and pd.notna(row[rate_col]):
+                        # Convert ID to string and remove decimal part if it's like "1.0"
+                        id_raw = row[id_col]
+                        if isinstance(id_raw, (int, float)):
+                            id_value = str(int(id_raw) if id_raw == int(id_raw) else id_raw)
+                        else:
+                            id_value = str(id_raw)
+                            if id_value.endswith('.0'):
+                                id_value = id_value[:-2]
+
+                        rate_value = float(row[rate_col])
+                        reference_values[id_value] = rate_value
+
+                print(f"Loaded {len(reference_values)} reference values from CSV")
+                print(f"Example ID to rate mapping: {list(reference_values.items())[:3]}")
+            else:
+                print("Could not find suitable columns for ID and reference values")
+                print("Required: a column for ID and a column for reference values")
+                print("Available columns:", list(csv_data.columns))
+        except Exception as e:
+            print(f"Error loading reference values from CSV: {e}")
+            reference_values = None
+
+    # Load model
     model = load_model(model_path, device)
     transform = get_transform()
     device = torch.device(device if torch.cuda.is_available() else 'cpu')
 
-    # 获取所有图像文件
+    # Get all image files
     image_extensions = ('*.jpg', '*.jpeg', '*.png', '*.bmp', '*.tif', '*.tiff')
     image_files = []
     for ext in image_extensions:
         image_files.extend(glob.glob(os.path.join(image_dir, ext)))
         image_files.extend(glob.glob(os.path.join(image_dir, '**', ext), recursive=True))
 
-    image_files = sorted(list(set(image_files)))  # 去重并排序
+    image_files = sorted(list(set(image_files)))  # Remove duplicates and sort
 
     if not image_files:
-        print(f"在 {image_dir} 中未找到图像文件")
+        print(f"No image files found in {image_dir}")
         sys.exit(1)
 
-    print(f"找到 {len(image_files)} 个图像文件")
+    print(f"Found {len(image_files)} image files")
 
-    # 批量预测
+    # Create image to ID mapping
+    image_id_map = {}
+    if reference_values:
+        print("Sample image filenames:")
+        for img_path in image_files[:5]:  # Print first 5 image filenames
+            print(f"  - {os.path.basename(img_path)}")
+
+        print("Sample IDs from CSV:")
+        sample_ids = list(reference_values.keys())[:5]  # First 5 IDs
+        for id_val in sample_ids:
+            print(f"  - {id_val}")
+
+        print("Extracting numeric IDs from filenames...")
+
+        matched_count = 0
+        for img_path in image_files:
+            filename = os.path.basename(img_path)
+            extracted_id = extract_id_from_filename(filename)
+
+            if extracted_id and extracted_id in reference_values:
+                image_id_map[img_path] = extracted_id
+                matched_count += 1
+                if matched_count <= 5:  # Print first 5 matches
+                    print(f"✓ Matched: {filename} with ID {extracted_id} → Rate {reference_values[extracted_id]}")
+
+        print(f"Matched {matched_count} out of {len(image_files)} images with reference values")
+
+    # Batch predictions
     results = []
 
     with ThreadPoolExecutor(max_workers=n_workers) as executor:
-        # 创建任务
+        # Create tasks
         future_to_path = {
             executor.submit(
                 predict_single_image, model, path, transform, device
             ): path for path in image_files
         }
 
-        # 处理结果
-        for future in tqdm(as_completed(future_to_path), total=len(image_files), desc="处理图像"):
+        # Process results
+        for future in tqdm(as_completed(future_to_path), total=len(image_files), desc="Processing images"):
             result = future.result()
             results.append(result)
 
-    # 计算成功率
+    # Calculate success rate
     success_count = sum(1 for r in results if r['status'] == 'success')
-    print(f"处理完成: {success_count}/{len(results)} 张图像成功处理")
+    print(f"Processing completed: {success_count}/{len(results)} images successfully processed")
 
-    # 准备CSV数据
+    # Prepare CSV data
     csv_data = []
     valid_predictions = []
+    errors = []
 
     for result in results:
+        img_path = result['path']
+        filename = os.path.basename(img_path)
         row = {
-            'image_path': result['path'],
+            'image_path': img_path,
             'status': result['status']
         }
 
         if result['status'] == 'success':
             row['prediction'] = result['prediction']
             valid_predictions.append(result['prediction'])
+
+            # Find matching ID in the filename and get reference value if available
+            if img_path in image_id_map:
+                id_val = image_id_map[img_path]
+                ref_value = reference_values[id_val]
+                error = result['prediction'] - ref_value
+                row['reference'] = ref_value
+                row['error'] = error
+                row['matched_id'] = id_val
+                errors.append(error)
         else:
             row['error'] = result['error']
 
         csv_data.append(row)
 
-    # 保存CSV结果
+    # Save CSV results
     csv_path = os.path.join(output_dir, 'results.csv')
     pd.DataFrame(csv_data).to_csv(csv_path, index=False)
-    print(f"结果已保存到: {csv_path}")
+    print(f"Results saved to: {csv_path}")
 
-    # 生成每个图像的可视化
+    # Generate visualizations for each image
     if valid_predictions:
         global_min = min(valid_predictions)
         global_max = max(valid_predictions)
 
-        print("生成每张图像的可视化结果...")
+        print("Generating visualizations for each image...")
         for result in tqdm(results):
             if result['status'] == 'success':
-                base_name = os.path.basename(result['path'])
+                img_path = result['path']
+                base_name = os.path.basename(img_path)
                 vis_path = os.path.join(output_dir, 'visualizations', f"{os.path.splitext(base_name)[0]}_result.png")
-                create_visualization(result, vis_path, global_min, global_max)
 
-        # 创建图像库
-        print("生成图像库...")
-        create_gallery(results, output_dir, global_min=global_min, global_max=global_max)
+                # Get reference value if available
+                ref_value = None
+                if img_path in image_id_map:
+                    id_val = image_id_map[img_path]
+                    ref_value = reference_values[id_val]
 
-    # 生成统计信息
+                create_visualization(result, vis_path, global_min, global_max, ref_value)
+
+        # Create gallery
+        print("Generating image gallery...")
+        create_gallery(results, output_dir, global_min=global_min, global_max=global_max,
+                       reference_values=reference_values, image_id_map=image_id_map)
+
+    # Generate statistics
     if valid_predictions:
         stats = {
             'processed_images': len(results),
@@ -417,62 +555,138 @@ def process_image_folder(model_path, image_dir, output_dir=None, device='cuda', 
             'processing_time_seconds': time.time() - start_time
         }
 
-        # 保存统计信息
+        # Add error statistics if reference values were provided
+        if errors:
+            stats.update({
+                'mean_error': float(np.mean(errors)),
+                'median_error': float(np.median(errors)),
+                'max_abs_error': float(np.max(np.abs(errors))),
+                'mean_abs_error': float(np.mean(np.abs(errors))),
+                'std_error': float(np.std(errors)),
+                'rmse': float(np.sqrt(np.mean(np.array(errors)**2)))
+            })
+
+        # Save statistics
         stats_path = os.path.join(output_dir, 'statistics.json')
         with open(stats_path, 'w') as f:
             json.dump(stats, f, indent=4)
 
-        print(f"统计信息已保存到: {stats_path}")
+        print(f"Statistics saved to: {stats_path}")
 
-        # 绘制直方图
+        # Draw histograms
+        # Prediction histogram
         plt.figure(figsize=(10, 6))
         plt.hist(valid_predictions, bins=20, alpha=0.7, color='royalblue')
-        plt.axvline(np.mean(valid_predictions), color='r', linestyle='dashed', linewidth=2, label=f'均值: {np.mean(valid_predictions):.2f}')
-        plt.axvline(np.median(valid_predictions), color='g', linestyle='dashed', linewidth=2, label=f'中位数: {np.median(valid_predictions):.2f}')
-        plt.title('预测值分布')
-        plt.xlabel('预测值')
-        plt.ylabel('频率')
+        plt.axvline(np.mean(valid_predictions), color='r', linestyle='dashed', linewidth=2, label=f'Mean: {np.mean(valid_predictions):.2f}')
+        plt.axvline(np.median(valid_predictions), color='g', linestyle='dashed', linewidth=2, label=f'Median: {np.median(valid_predictions):.2f}')
+        plt.title('Prediction Value Distribution')
+        plt.xlabel('Prediction Value')
+        plt.ylabel('Frequency')
         plt.grid(alpha=0.3)
         plt.legend()
 
-        # 保存直方图
+        # Save histogram
         hist_path = os.path.join(output_dir, 'prediction_histogram.png')
         plt.savefig(hist_path, dpi=150, bbox_inches='tight')
         plt.close()
-        print(f"预测值分布直方图已保存到: {hist_path}")
+        print(f"Prediction histogram saved to: {hist_path}")
+
+        # If we have errors, generate error histogram
+        if errors:
+            plt.figure(figsize=(10, 6))
+            plt.hist(errors, bins=20, alpha=0.7, color='salmon')
+            plt.axvline(np.mean(errors), color='r', linestyle='dashed', linewidth=2, label=f'Mean: {np.mean(errors):.2f}')
+            plt.axvline(0, color='k', linestyle='solid', linewidth=2, label='Zero Error')
+            plt.title('Error Distribution')
+            plt.xlabel('Error (Predicted - Reference)')
+            plt.ylabel('Frequency')
+            plt.grid(alpha=0.3)
+            plt.legend()
+
+            # Save error histogram
+            error_hist_path = os.path.join(output_dir, 'error_histogram.png')
+            plt.savefig(error_hist_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            print(f"Error histogram saved to: {error_hist_path}")
+
+            # Generate scatter plot of predicted vs reference values
+            if len(errors) > 1:
+                # Collect pairs of reference and prediction values
+                pred_ref_pairs = []
+                for result in results:
+                    if result['status'] == 'success' and result['path'] in image_id_map:
+                        id_val = image_id_map[result['path']]
+                        pred_ref_pairs.append((reference_values[id_val], result['prediction']))
+
+                if pred_ref_pairs:
+                    ref_vals, pred_vals = zip(*pred_ref_pairs)
+
+                    plt.figure(figsize=(8, 8))
+                    plt.scatter(ref_vals, pred_vals, alpha=0.7)
+
+                    # Add identity line
+                    min_val = min(min(ref_vals), min(pred_vals))
+                    max_val = max(max(ref_vals), max(pred_vals))
+                    plt.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.7, label='Identity Line')
+
+                    # Add linear fit
+                    if len(pred_ref_pairs) > 1:
+                        z = np.polyfit(ref_vals, pred_vals, 1)
+                        p = np.poly1d(z)
+                        plt.plot(np.array([min_val, max_val]), p(np.array([min_val, max_val])),
+                                 'r-', label=f'Fit: y={z[0]:.3f}x+{z[1]:.3f}')
+
+                    plt.title('Predicted vs Reference Values')
+                    plt.xlabel('Reference Values')
+                    plt.ylabel('Predicted Values')
+                    plt.legend()
+                    plt.grid(alpha=0.3)
+
+                    # Save scatter plot
+                    scatter_path = os.path.join(output_dir, 'pred_vs_ref_scatter.png')
+                    plt.savefig(scatter_path, dpi=150, bbox_inches='tight')
+                    plt.close()
+                    print(f"Pred vs Ref scatter plot saved to: {scatter_path}")
 
     elapsed_time = time.time() - start_time
-    print(f"总处理时间: {elapsed_time:.2f} 秒")
-    print(f"所有结果已保存到: {output_dir}")
+    print(f"Total processing time: {elapsed_time:.2f} seconds")
+    print(f"All results saved to: {output_dir}")
 
 def main():
-    """主函数"""
-    parser = argparse.ArgumentParser(description='批量图像纹理分析工具')
-    parser.add_argument('--model_path', required=True, help='预训练模型路径')
-    parser.add_argument('--image_dir', required=True, help='图像目录路径')
-    parser.add_argument('--output_dir', help='输出目录路径')
-    parser.add_argument('--device', default='cuda', help='计算设备 (cuda/cpu)')
-    parser.add_argument('--workers', type=int, default=4, help='处理线程数')
+    """Main function"""
+    parser = argparse.ArgumentParser(description='Batch Image Texture Analysis Tool')
+    parser.add_argument('--model_path', required=True, help='Path to pretrained model')
+    parser.add_argument('--image_dir', required=True, help='Path to image directory')
+    parser.add_argument('--output_dir', help='Path to output directory')
+    parser.add_argument('--device', default='cuda', help='Compute device (cuda/cpu)')
+    parser.add_argument('--workers', type=int, default=4, help='Number of processing threads')
+    parser.add_argument('--csv_path', help='Path to CSV with reference values (optional)')
 
     args = parser.parse_args()
 
-    # 检查模型文件是否存在
+    # Check if model file exists
     if not os.path.exists(args.model_path):
-        print(f"错误: 模型文件不存在: {args.model_path}")
+        print(f"Error: Model file does not exist: {args.model_path}")
         sys.exit(1)
 
-    # 检查图像目录是否存在
+    # Check if image directory exists
     if not os.path.exists(args.image_dir):
-        print(f"错误: 图像目录不存在: {args.image_dir}")
+        print(f"Error: Image directory does not exist: {args.image_dir}")
         sys.exit(1)
 
-    # 处理图像文件夹
+    # Check if CSV file exists if provided
+    if args.csv_path and not os.path.exists(args.csv_path):
+        print(f"Warning: CSV file does not exist: {args.csv_path}")
+        args.csv_path = None
+
+    # Process image folder
     process_image_folder(
         model_path=args.model_path,
         image_dir=args.image_dir,
         output_dir=args.output_dir,
         device=args.device,
-        n_workers=args.workers
+        n_workers=args.workers,
+        csv_path=args.csv_path
     )
 
 if __name__ == "__main__":
