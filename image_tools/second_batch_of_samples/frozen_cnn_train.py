@@ -142,7 +142,7 @@ class ContrastTextureEnhancer(object):
         return img
 
 class DatasetSplitter:
-    """Split original dataset into training, validation and test sets"""
+    """Split original dataset into training, validation and test sets with improved distribution balancing"""
     def __init__(self, source_dir, labels_file, target_dir, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15, random_state=42):
         self.source_dir = source_dir
         self.labels_file = labels_file
@@ -184,77 +184,72 @@ class DatasetSplitter:
         if len(valid_df) == 0:
             raise ValueError("No valid images found. Please check the source directory and labels file.")
 
-        try:
-            # 尝试创建分层标签
-            # 使用更少的分箱数量，确保每个箱子有足够的样本
-            n_bins = min(5, len(valid_df) // 10)  # 确保每个bin至少有10个样本
-            n_bins = max(2, n_bins)  # 至少使用2个bin
+        # 按标签值排序
+        valid_df = valid_df.sort_values('label')
 
-            print(f"Attempting stratified split with {n_bins} bins")
+        # 使用均匀采样而非随机采样或分层采样
+        # 这样确保各个数据集都能覆盖完整的标签分布
+        indices = np.arange(len(valid_df))
 
-            # 创建分箱，如果有重复值，允许它们进入同一个bin
-            valid_df['label_bin'] = pd.qcut(
-                valid_df['label'],
-                q=n_bins,
-                labels=False,
-                duplicates='drop'
-            )
+        # 分配索引到不同集合，确保每个值区间都均匀分布
+        train_indices = []
+        val_indices = []
+        test_indices = []
 
-            # 检查每个bin中的样本数量
-            bin_counts = valid_df['label_bin'].value_counts()
-            print(f"Bin counts: {bin_counts.to_dict()}")
-
-            # 确保每个bin至少有2个样本
-            if bin_counts.min() >= 2:
-                # 使用分层抽样
-                train_df, temp_df = train_test_split(
-                    valid_df,
-                    train_size=self.train_ratio,
-                    random_state=self.random_state,
-                    stratify=valid_df['label_bin']
-                )
-
-                val_size = self.val_ratio / (self.val_ratio + self.test_ratio)
-                val_df, test_df = train_test_split(
-                    temp_df,
-                    train_size=val_size,
-                    random_state=self.random_state,
-                    stratify=temp_df['label_bin']
-                )
-
-                # 移除临时的bin列
-                train_df = train_df.drop('label_bin', axis=1)
-                val_df = val_df.drop('label_bin', axis=1)
-                test_df = test_df.drop('label_bin', axis=1)
-
-                print("Successfully performed stratified split")
+        # 使用系统采样方法分配样本
+        for i in range(len(indices)):
+            r = i % 5  # 使用周期为5的系统采样
+            if r < int(5 * self.train_ratio):
+                train_indices.append(i)
+            elif r < int(5 * (self.train_ratio + self.val_ratio)):
+                val_indices.append(i)
             else:
-                raise ValueError(f"Some bins have less than 2 samples, using random split instead")
+                test_indices.append(i)
 
-        except Exception as e:
-            print(f"Stratified split failed: {str(e)}")
-            print("Falling back to random split")
-
-            # 回退到随机分割
-            train_df, temp_df = train_test_split(
-                valid_df,
-                train_size=self.train_ratio,
-                random_state=self.random_state
-            )
-
-            val_size = self.val_ratio / (self.val_ratio + self.test_ratio)
-            val_df, test_df = train_test_split(
-                temp_df,
-                train_size=val_size,
-                random_state=self.random_state
-            )
+        # 创建数据子集
+        train_df = valid_df.iloc[train_indices].copy()
+        val_df = valid_df.iloc[val_indices].copy()
+        test_df = valid_df.iloc[test_indices].copy()
 
         print(f"Split dataset: {len(train_df)} training, {len(val_df)} validation, {len(test_df)} test")
+
+        # 分析数据分布
+        self._analyze_distribution(train_df, val_df, test_df)
 
         # 保存子集
         self._save_subset(train_df, 'train')
         self._save_subset(val_df, 'val')
         self._save_subset(test_df, 'test')
+
+    def _analyze_distribution(self, train_df, val_df, test_df):
+        """分析各数据集的标签分布"""
+        print("\nAnalyzing label distribution:")
+
+        # 计算各数据集的标签范围和统计信息
+        train_min, train_max = train_df['label'].min(), train_df['label'].max()
+        val_min, val_max = val_df['label'].min(), val_df['label'].max()
+        test_min, test_max = test_df['label'].min(), test_df['label'].max()
+
+        print(f"Train label range: {train_min:.2f} to {train_max:.2f}, mean={train_df['label'].mean():.2f}, std={train_df['label'].std():.2f}")
+        print(f"Val label range: {val_min:.2f} to {val_max:.2f}, mean={val_df['label'].mean():.2f}, std={val_df['label'].std():.2f}")
+        print(f"Test label range: {test_min:.2f} to {test_max:.2f}, mean={test_df['label'].mean():.2f}, std={test_df['label'].std():.2f}")
+
+        # 使用直方图可视化分布
+        plt.figure(figsize=(12, 8))
+
+        plt.hist(train_df['label'], alpha=0.5, bins=20, label='Train')
+        plt.hist(val_df['label'], alpha=0.5, bins=20, label='Validation')
+        plt.hist(test_df['label'], alpha=0.5, bins=20, label='Test')
+
+        plt.title('Label Distribution Across Datasets')
+        plt.xlabel('Label Value')
+        plt.ylabel('Frequency')
+        plt.legend()
+
+        # 保存分布图
+        os.makedirs(os.path.join(self.target_dir, 'analysis'), exist_ok=True)
+        plt.savefig(os.path.join(self.target_dir, 'analysis', 'label_distribution.png'), dpi=300, bbox_inches='tight')
+        plt.close()
 
     def _save_subset(self, df, subset_name):
         """Save a subset of data"""
@@ -1198,12 +1193,12 @@ def main():
     print(f"Using device: {device}")
 
     # Set paths - adapt to the new dataset structure
-    base_dir = "/home/lsy/gbx_cropping_ws/src/image_tools/only_fifteen"
-    raw_dataset_path = os.path.join(base_dir, "dataset")            # Directory with all original images and labels.csv
+    base_dir = "/home/lsy/gbx_cropping_ws/src/image_tools/second_batch_of_samples/whole_second_batch_fifteen_samples"
+    raw_dataset_path = os.path.join(base_dir, "cropping")            # Directory with all original images and labels.csv
     labels_file = os.path.join(raw_dataset_path, "labels.csv")      # Labels file path
     split_dataset_path = os.path.join(base_dir, "split_dataset")    # Path to store split dataset
     augmented_dataset_path = os.path.join(base_dir, "augmented_dataset")
-    save_dir = "checkpoints"
+    save_dir = "whole_second_batch_fifteen_samples/checkpoints"
     os.makedirs(save_dir, exist_ok=True)
 
     # Check if labels file exists
