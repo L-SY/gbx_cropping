@@ -2,6 +2,7 @@ import cv2
 import os
 import numpy as np
 import shutil
+import argparse
 
 def auto_canny(image, sigma=0.33):
     v = np.median(image)
@@ -9,7 +10,7 @@ def auto_canny(image, sigma=0.33):
     upper = int(min(255, (1.0 + sigma) * v))
     return cv2.Canny(image, lower, upper)
 
-def find_square(img_path, debug_folder=None):
+def find_square(img_path, debug_folder=None, debug_mode=False):
     img = cv2.imread(img_path)
     if img is None:
         return None, None
@@ -127,7 +128,7 @@ def find_square(img_path, debug_folder=None):
         cropped = original_img[y:y+h, x:x+w]
 
         # 保存调试图像
-        if debug_folder:
+        if debug_mode and debug_folder:
             base_name = os.path.splitext(os.path.basename(img_path))[0]
             debug_path = os.path.join(debug_folder, f"{base_name}_detected.jpg")
             cv2.imwrite(debug_path, debug_img)
@@ -136,10 +137,19 @@ def find_square(img_path, debug_folder=None):
 
     return None, debug_img
 
-def process_folder(input_folder, output_folder, debug_folder, undetected_folder):
-    os.makedirs(output_folder, exist_ok=True)
-    os.makedirs(debug_folder, exist_ok=True)
+def process_folder(input_folder, output_folder, debug_mode=False):
+    # 创建输出文件夹结构
+    cropped_folder = os.path.join(output_folder, "cropped")
+    undetected_folder = os.path.join(output_folder, "undetected")
+
+    os.makedirs(cropped_folder, exist_ok=True)
     os.makedirs(undetected_folder, exist_ok=True)
+
+    # 仅在debug模式下创建debug文件夹
+    debug_folder = None
+    if debug_mode:
+        debug_folder = os.path.join(output_folder, "debug")
+        os.makedirs(debug_folder, exist_ok=True)
 
     total_images = 0
     detected_images = 0
@@ -150,28 +160,47 @@ def process_folder(input_folder, output_folder, debug_folder, undetected_folder)
             img_path = os.path.join(input_folder, filename)
 
             print(f"处理图片: {filename}")
-            cropped, debug_img = find_square(img_path, debug_folder)
+            cropped, debug_img = find_square(img_path, debug_folder, debug_mode)
 
             if cropped is not None:
                 detected_images += 1
-                output_path = os.path.join(output_folder, f"cropped_{filename}")
+                output_path = os.path.join(cropped_folder, f"cropped_{filename}")
                 cv2.imwrite(output_path, cropped)
+
+                # 在debug模式下保存调试图像
+                if debug_mode and debug_folder:
+                    debug_path = os.path.join(debug_folder, f"{filename}_detected.jpg")
+                    cv2.imwrite(debug_path, debug_img)
             else:
                 print(f"未检测到正方形框: {filename}")
                 # 将未检测到的图片复制到undetected文件夹
                 undetected_path = os.path.join(undetected_folder, filename)
                 shutil.copy2(img_path, undetected_path)
 
+                # 在debug模式下保存调试图像
+                if debug_mode and debug_folder:
+                    debug_path = os.path.join(debug_folder, f"{filename}_failed.jpg")
+                    cv2.imwrite(debug_path, debug_img)
+
     detection_rate = (detected_images / total_images) * 100 if total_images > 0 else 0
     print(f"\n检测总结:")
     print(f"总图片数: {total_images}")
     print(f"成功检测数: {detected_images}")
     print(f"检测率: {detection_rate:.2f}%")
+    print(f"成功裁剪的图片保存在: {cropped_folder}")
+    print(f"未检测成功的图片保存在: {undetected_folder}")
+    if debug_mode:
+        print(f"调试图片保存在: {debug_folder}")
 
 if __name__ == "__main__":
-    input_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/second_batch_of_samples/raw_images"
-    output_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/second_batch_of_samples/cropping"
-    debug_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/second_batch_of_samples/debug"
-    undetected_folder = "/home/lsy/gbx_cropping_ws/src/image_tools/second_batch_of_samples/undetected"
+    # 创建参数解析器
+    parser = argparse.ArgumentParser(description='检测并裁剪图像中的正方形区域')
+    parser.add_argument('--input', type=str, required=True, help='输入图像文件夹路径')
+    parser.add_argument('--output', type=str, required=True, help='输出文件夹路径')
+    parser.add_argument('--debug', action='store_true', help='是否生成调试图像 (默认: 否)')
 
-    process_folder(input_folder, output_folder, debug_folder, undetected_folder)
+    # 解析命令行参数
+    args = parser.parse_args()
+
+    # 处理文件夹
+    process_folder(args.input, args.output, args.debug)
