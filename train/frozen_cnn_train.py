@@ -3,7 +3,7 @@ import os
 import json
 import numpy as np
 import pandas as pd
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance, ImageFilter, ImageDraw
 from tqdm import tqdm
 from datetime import datetime
 from skimage.feature import local_binary_pattern
@@ -22,6 +22,25 @@ from sklearn.model_selection import train_test_split, StratifiedKFold
 # matplotlib导入
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+# 在其他预处理类之后添加
+class InnerBlackBorderAdder(object):
+    """在图像内部添加黑色边框"""
+    def __init__(self, border_width=15):
+        self.border_width = border_width
+
+    def __call__(self, img):
+        # 直接应用边框，不进行随机性检查
+        width, height = img.size
+        bordered_img = img.copy()
+        draw = ImageDraw.Draw(bordered_img)
+
+        draw.rectangle([(0, 0), (width, self.border_width)], fill="black")
+        draw.rectangle([(0, height - self.border_width), (width, height)], fill="black")
+        draw.rectangle([(0, 0), (self.border_width, height)], fill="black")
+        draw.rectangle([(width - self.border_width, 0), (width, height)], fill="black")
+
+        return bordered_img
 
 class FixedRotation(object):
     """Fixed angle rotation: only rotate 0°, 90°, 180° or 270°"""
@@ -288,6 +307,7 @@ class DatasetAugmenter:
                 # 3) Contrast-aware texture enhancement
                 ContrastTextureEnhancer(
                     clip_limit=3.0, tile_grid_size=(8, 8), p=0.7),
+                InnerBlackBorderAdder(border_width=70),
                 # Resize to target size
                 transforms.Resize((224, 224)),
             ])
@@ -301,6 +321,7 @@ class DatasetAugmenter:
                 # # 3) Contrast-aware texture enhancement
                 # ContrastTextureEnhancer(
                 #     clip_limit=3.0, tile_grid_size=(8, 8), p=0.7),
+                InnerBlackBorderAdder(border_width=70),
                 transforms.Resize((224, 224)),
             ])
 
@@ -1099,44 +1120,52 @@ def visualize_preprocessing(image_path, save_dir):
     original.save(os.path.join(save_dir, '01_original.png'))
 
     # Apply various preprocessing methods
+    # 0. Black border addition
+    border_added = InnerBlackBorderAdder(border_width=70)(original)
+    border_added.save(os.path.join(save_dir, '02_border_added.png'))
+
     # 1. Fixed angle rotation
     rotated = FixedRotation(p=1.0)(original)
-    rotated.save(os.path.join(save_dir, '02_rotated.png'))
+    rotated.save(os.path.join(save_dir, '03_rotated.png'))
 
     # 2. Adaptive edge enhancement
     edge_enhanced = AdaptiveEdgeEnhancer(p=1.0)(original)
-    edge_enhanced.save(os.path.join(save_dir, '03_edge_enhanced.png'))
+    edge_enhanced.save(os.path.join(save_dir, '04_edge_enhanced.png'))
 
     # 3. Contrast enhancement
     contrast_enhanced = ContrastTextureEnhancer(p=1.0)(original)
-    contrast_enhanced.save(os.path.join(save_dir, '04_contrast_enhanced.png'))
+    contrast_enhanced.save(os.path.join(save_dir, '05_contrast_enhanced.png'))
 
     # 4. Complete enhancement chain
     transform = transforms.Compose([
+        InnerBlackBorderAdder(border_width=70),
         AdaptiveEdgeEnhancer(p=1.0),
         ContrastTextureEnhancer(p=1.0)
     ])
     fully_enhanced = transform(original)
-    fully_enhanced.save(os.path.join(save_dir, '05_fully_enhanced.png'))
+    fully_enhanced.save(os.path.join(save_dir, '06_fully_enhanced.png'))
 
     # 5. Comparison visualization
-    fig, axes = plt.subplots(1, 5, figsize=(20, 5))
+    fig, axes = plt.subplots(1, 6, figsize=(24, 5))
 
     # Display images
     axes[0].imshow(np.array(original))
     axes[0].set_title('Original')
 
-    axes[1].imshow(np.array(rotated))
-    axes[1].set_title('Rotated')
+    axes[1].imshow(np.array(border_added))
+    axes[1].set_title('Border Added')
 
-    axes[2].imshow(np.array(edge_enhanced))
-    axes[2].set_title('Edge Enhanced')
+    axes[2].imshow(np.array(rotated))
+    axes[2].set_title('Rotated')
 
-    axes[3].imshow(np.array(contrast_enhanced))
-    axes[3].set_title('Contrast Enhanced')
+    axes[3].imshow(np.array(edge_enhanced))
+    axes[3].set_title('Edge Enhanced')
 
-    axes[4].imshow(np.array(fully_enhanced))
-    axes[4].set_title('Fully Enhanced')
+    axes[4].imshow(np.array(contrast_enhanced))
+    axes[4].set_title('Contrast Enhanced')
+
+    axes[5].imshow(np.array(fully_enhanced))
+    axes[5].set_title('Fully Enhanced')
 
     # Remove ticks
     for ax in axes:
@@ -1193,12 +1222,12 @@ def main():
     print(f"Using device: {device}")
 
     # Set paths - adapt to the new dataset structure
-    base_dir = "/home/lsy/gbx_cropping_ws/src/image_tools/second_batch_of_samples/whole_second_batch_fifteen_samples"
+    base_dir = "/image_tools/second_batch_of_samples/whole_second_batch_fifteen_samples"
     raw_dataset_path = os.path.join(base_dir, "cropping")            # Directory with all original images and labels.csv
     labels_file = os.path.join(raw_dataset_path, "labels.csv")      # Labels file path
     split_dataset_path = os.path.join(base_dir, "split_dataset")    # Path to store split dataset
     augmented_dataset_path = os.path.join(base_dir, "augmented_dataset")
-    save_dir = "whole_second_batch_fifteen_samples/checkpoints"
+    save_dir = "../image_tools/second_batch_of_samples/whole_second_batch_fifteen_samples/checkpoints"
     os.makedirs(save_dir, exist_ok=True)
 
     # Check if labels file exists

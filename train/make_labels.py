@@ -2,8 +2,8 @@ import pandas as pd
 import sys
 
 # 设置输入和输出文件路径
-input_file = '/home/lsy/gbx_cropping_ws/src/image_tools/second_batch_of_samples/whole_second_batch_fifteen_samples/cropping/data/second_batch_of_samples.csv'  # 替换为您的输入文件路径
-output_file = '/home/lsy/gbx_cropping_ws/src/image_tools/second_batch_of_samples/whole_second_batch_fifteen_samples/cropping/labels.csv'  # 替换为您的输出文件路径
+input_file = '/image_tools/second_batch_of_samples/whole_second_batch_fifteen_samples/cropping/data/second_batch_of_samples.csv'  # 替换为您的输入文件路径
+output_file = '/dataset/second_batch/labels.csv'  # 替换为您的输出文件路径
 
 try:
     # 读取输入CSV

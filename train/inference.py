@@ -15,7 +15,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import pandas as pd
-from PIL import Image
+from PIL import Image, ImageDraw
 from torchvision import transforms, models
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
@@ -155,6 +155,33 @@ def get_transform():
                              std=[0.229, 0.224, 0.225])
     ])
 
+def add_inner_black_border(image, border_width=70):
+    """Add an inner black border that covers the edge portion of the image"""
+    if isinstance(image, np.ndarray):
+        # Convert numpy array to PIL Image
+        image = Image.fromarray(image)
+
+    # Get image dimensions
+    width, height = image.size
+
+    # Create a copy of the image
+    bordered_image = image.copy()
+
+    # Create PIL drawing object
+    draw = ImageDraw.Draw(bordered_image)
+
+    # Draw black rectangles on all four sides to create inner border
+    # Top border
+    draw.rectangle([(0, 0), (width, border_width)], fill='black')
+    # Bottom border
+    draw.rectangle([(0, height-border_width), (width, height)], fill='black')
+    # Left border
+    draw.rectangle([(0, 0), (border_width, height)], fill='black')
+    # Right border
+    draw.rectangle([(width-border_width, 0), (width, height)], fill='black')
+
+    return bordered_image
+
 def predict_single_image(model, image_path, transform, device):
     """Predict for a single image"""
     try:
@@ -205,7 +232,7 @@ def generate_heatmap(prediction, min_val=0, max_val=30):
 
     return color_8bit, normalized
 
-def create_visualization(result, output_path, global_min=0, global_max=30, reference_value=None):
+def create_visualization(result, output_path, global_min=0, global_max=30, reference_value=None, border_width=70):
     """Create result visualization"""
     if result['status'] != 'success':
         return
@@ -213,14 +240,17 @@ def create_visualization(result, output_path, global_min=0, global_max=30, refer
     image = result['image']
     prediction = result['prediction']
 
+    # Add inner black border to the image - same as used in training
+    bordered_image = add_inner_black_border(image, border_width=border_width)
+
     # Calculate color using global min and max
     color, normalized = generate_heatmap(prediction, global_min, global_max)
 
     # Create figure
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    # Show original image
-    ax.imshow(image)
+    # Show image with inner black border
+    ax.imshow(bordered_image)
 
     # Add prediction value text with color, make it visible on any background
     if reference_value is not None:
@@ -229,8 +259,11 @@ def create_visualization(result, output_path, global_min=0, global_max=30, refer
     else:
         text = f"Predicted: {prediction:.2f}"
 
-    ax.text(10, 30, text, fontsize=16, weight='bold',
-            bbox=dict(facecolor='white', alpha=0.7, edgecolor='black', boxstyle='round,pad=0.5'))
+    # Place text near the center to avoid the border
+    width, height = image.size
+    ax.text(width/2, height/2 - 50, text, fontsize=16, weight='bold',
+            bbox=dict(facecolor='white', alpha=0.7, edgecolor='black', boxstyle='round,pad=0.5'),
+            ha='center')
 
     # Add colorbar indicator
     sm = plt.cm.ScalarMappable(cmap=plt.cm.coolwarm,
@@ -253,7 +286,7 @@ def create_visualization(result, output_path, global_min=0, global_max=30, refer
     plt.savefig(output_path, dpi=200, bbox_inches='tight')
     plt.close(fig)
 
-def create_gallery(results, output_dir, rows=5, global_min=None, global_max=None, reference_values=None, image_id_map=None):
+def create_gallery(results, output_dir, rows=5, global_min=None, global_max=None, reference_values=None, image_id_map=None, border_width=70):
     """Create image gallery"""
     # Skip failed images
     valid_results = [r for r in results if r['status'] == 'success']
@@ -285,7 +318,9 @@ def create_gallery(results, output_dir, rows=5, global_min=None, global_max=None
     for i, result in enumerate(valid_results):
         if i < len(axes):
             ax = axes[i]
-            ax.imshow(result['image'])
+            # Add inner black border to image
+            bordered_image = add_inner_black_border(result['image'], border_width=border_width)
+            ax.imshow(bordered_image)
 
             # Add prediction value text
             pred = result['prediction']
@@ -305,12 +340,6 @@ def create_gallery(results, output_dir, rows=5, global_min=None, global_max=None
                 title = f"{filename}\nPrediction: {pred:.2f}"
 
             ax.set_title(title, fontsize=10)
-
-            # Set border color reflecting prediction value
-            color, _ = generate_heatmap(pred, global_min, global_max)
-            for spine in ax.spines.values():
-                spine.set_color(np.array(color)/255)
-                spine.set_linewidth(5)
 
             # Turn off axes
             ax.axis('off')
@@ -347,7 +376,7 @@ def extract_id_from_filename(filename):
         return match.group(1)
     return None
 
-def process_image_folder(model_path, image_dir, output_dir=None, device='cuda', n_workers=4, csv_path=None):
+def process_image_folder(model_path, image_dir, output_dir=None, device='cuda', n_workers=4, csv_path=None, border_width=70):
     """Process entire image folder"""
     start_time = time.time()
 
@@ -534,12 +563,12 @@ def process_image_folder(model_path, image_dir, output_dir=None, device='cuda', 
                     id_val = image_id_map[img_path]
                     ref_value = reference_values[id_val]
 
-                create_visualization(result, vis_path, global_min, global_max, ref_value)
+                create_visualization(result, vis_path, global_min, global_max, ref_value, border_width)
 
         # Create gallery
         print("Generating image gallery...")
         create_gallery(results, output_dir, global_min=global_min, global_max=global_max,
-                       reference_values=reference_values, image_id_map=image_id_map)
+                       reference_values=reference_values, image_id_map=image_id_map, border_width=border_width)
 
     # Generate statistics
     if valid_predictions:
@@ -661,6 +690,7 @@ def main():
     parser.add_argument('--device', default='cuda', help='Compute device (cuda/cpu)')
     parser.add_argument('--workers', type=int, default=4, help='Number of processing threads')
     parser.add_argument('--csv_path', help='Path to CSV with reference values (optional)')
+    parser.add_argument('--border_width', type=int, default=70, help='Width of inner black border (default: 70)')
 
     args = parser.parse_args()
 
@@ -686,7 +716,8 @@ def main():
         output_dir=args.output_dir,
         device=args.device,
         n_workers=args.workers,
-        csv_path=args.csv_path
+        csv_path=args.csv_path,
+        border_width=args.border_width
     )
 
 if __name__ == "__main__":
