@@ -48,7 +48,7 @@ def save_image():
 def parse_arguments():
     """解析命令行参数"""
     parser = argparse.ArgumentParser(description='Save images from a camera topic')
-    parser.add_argument('--start', type=int, default=0, help='Starting image number')
+    parser.add_argument('--start', type=int, default=1, help='Starting image number')
     parser.add_argument('--path', type=str, default="./images", help='Path to save images')
     parser.add_argument('--topic', type=str, default="/hk_camera/image_raw", help='Image topic to subscribe')
 
