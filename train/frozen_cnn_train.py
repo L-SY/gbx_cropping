@@ -9,6 +9,7 @@ from datetime import datetime
 from skimage.feature import local_binary_pattern
 from skimage import filters, exposure, morphology
 import cv2
+import argparse
 
 # PyTorch相关导入
 import torch
@@ -1177,115 +1178,164 @@ def visualize_preprocessing(image_path, save_dir):
 
     print(f"Preprocessing visualizations saved to {save_dir}")
 
-def inference_example(model_path, image_path, device='cuda'):
-    """Inference example, showing how to use the saved model for prediction"""
-    # Load model
-    device = torch.device(device if torch.cuda.is_available() else 'cpu')
+def parse_args():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='Train a regression model for texture analysis')
 
-    # Load checkpoint
-    checkpoint = torch.load(model_path, map_location=device)
+    # 主要路径参数
+    parser.add_argument('--dataset_path', type=str, required=True,
+                        help='输入数据集路径 (包含所有图片和labels.csv的目录)')
+    parser.add_argument('--output_path', type=str, required=True,
+                        help='输出路径 (用于保存分割数据集、增强数据集、模型和结果)')
 
-    # Create model instance
-    model = FrozenCNNRegressor(backbone='densenet121', pretrained=False)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.to(device)
-    model.eval()
+    # 数据分割参数
+    parser.add_argument('--train_ratio', type=float, default=0.7,
+                        help='训练集比例 (默认: 0.7)')
+    parser.add_argument('--val_ratio', type=float, default=0.15,
+                        help='验证集比例 (默认: 0.15)')
+    parser.add_argument('--test_ratio', type=float, default=0.15,
+                        help='测试集比例 (默认: 0.15)')
 
-    # Image preprocessing
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225])
-    ])
+    # 数据增强参数
+    parser.add_argument('--train_aug_factor', type=int, default=15,
+                        help='训练集增强因子 (默认: 15)')
+    parser.add_argument('--val_aug_factor', type=int, default=15,
+                        help='验证集增强因子 (默认: 15)')
+    parser.add_argument('--test_aug_factor', type=int, default=5,
+                        help='测试集增强因子 (默认: 5)')
+    parser.add_argument('--border_width', type=int, default=70,
+                        help='边框宽度 (默认: 70)')
 
-    # Load image
-    image = Image.open(image_path).convert('RGB')
-    input_tensor = transform(image).unsqueeze(0).to(device)
+    # 模型相关参数
+    parser.add_argument('--backbone', type=str, default='densenet121',
+                        choices=['densenet121', 'densenet169', 'resnet18', 'resnet34', 'resnet50', 'mobilenet_v2'],
+                        help='主干网络选择 (默认: densenet121)')
+    parser.add_argument('--initial_value', type=float, default=15.0,
+                        help='回归初始值 (默认: 15.0)')
+    parser.add_argument('--dropout_rate', type=float, default=0.5,
+                        help='Dropout率 (默认: 0.5)')
 
-    # Perform inference
-    with torch.no_grad():
-        prediction = model(input_tensor).item()
+    # 训练相关参数
+    parser.add_argument('--batch_size', type=int, default=32,
+                        help='批处理大小 (默认: 32)')
+    parser.add_argument('--num_epochs', type=int, default=200,
+                        help='训练轮数 (默认: 200)')
+    parser.add_argument('--learning_rate', type=float, default=0.001,
+                        help='学习率 (默认: 0.001)')
+    parser.add_argument('--unfreeze_epoch', type=int, default=80,
+                        help='解冻主干网络最后几层的轮数 (默认: 80)')
+    parser.add_argument('--eval_every', type=int, default=1,
+                        help='每隔多少轮评估一次 (默认: 1)')
+    parser.add_argument('--patience', type=int, default=80,
+                        help='早停耐心值 (默认: 80)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='随机种子 (默认: 42)')
+    parser.add_argument('--num_workers', type=int, default=4,
+                        help='数据加载线程数 (默认: 4)')
 
-    return prediction
+    # 其他参数
+    parser.add_argument('--no_split', action='store_true',
+                        help='跳过数据集分割步骤')
+    parser.add_argument('--no_augment', action='store_true',
+                        help='跳过数据增强步骤')
+    parser.add_argument('--no_train', action='store_true',
+                        help='跳过训练步骤')
+    parser.add_argument('--no_eval', action='store_true',
+                        help='跳过评估步骤')
+    parser.add_argument('--no_cuda', action='store_true',
+                        help='不使用CUDA，即使可用')
+
+    return parser.parse_args()
 
 def main():
     """Main function"""
-    # Set random seed
-    torch.manual_seed(42)
-    np.random.seed(42)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(42)
+    # 解析命令行参数
+    args = parse_args()
 
-    # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # 设置随机种子
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(args.seed)
+
+    # 设置设备
+    device = torch.device('cpu' if args.no_cuda or not torch.cuda.is_available() else 'cuda')
     print(f"Using device: {device}")
 
-    # Set paths - adapt to the new dataset structure
-    base_dir = "/image_tools/second_batch_of_samples/whole_second_batch_fifteen_samples"
-    raw_dataset_path = os.path.join(base_dir, "cropping")            # Directory with all original images and labels.csv
-    labels_file = os.path.join(raw_dataset_path, "labels.csv")      # Labels file path
-    split_dataset_path = os.path.join(base_dir, "split_dataset")    # Path to store split dataset
-    augmented_dataset_path = os.path.join(base_dir, "augmented_dataset")
-    save_dir = "../image_tools/second_batch_of_samples/whole_second_batch_fifteen_samples/checkpoints"
-    os.makedirs(save_dir, exist_ok=True)
+    # 设置路径
+    dataset_path = args.dataset_path
+    output_path = args.output_path
+    labels_file = os.path.join(dataset_path, "labels.csv")
 
-    # Check if labels file exists
+    # 创建输出目录结构
+    split_dataset_path = os.path.join(output_path, 'split_dataset')
+    augmented_dataset_path = os.path.join(output_path, 'augmented_dataset')
+    checkpoints_path = os.path.join(output_path, 'checkpoints')
+
+    os.makedirs(output_path, exist_ok=True)
+    os.makedirs(split_dataset_path, exist_ok=True)
+    os.makedirs(augmented_dataset_path, exist_ok=True)
+    os.makedirs(checkpoints_path, exist_ok=True)
+
+    # 检查标签文件是否存在
     if not os.path.exists(labels_file):
         raise ValueError(f"Labels file not found: {labels_file}")
 
     print(f"Found labels file: {labels_file}")
 
-    # Create experiment folder with timestamp
+    # 创建实验文件夹（带时间戳）
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    experiment_dir = os.path.join(save_dir, f"frozen_cnn_experiment_{timestamp}")
+    experiment_dir = os.path.join(checkpoints_path, f"experiment_{timestamp}")
     os.makedirs(experiment_dir, exist_ok=True)
 
-    # Split dataset
-    print("Splitting dataset into train, validation, and test sets...")
-    splitter = DatasetSplitter(
-        source_dir=raw_dataset_path,
-        labels_file=labels_file,
-        target_dir=split_dataset_path,
-        train_ratio=0.7,
-        val_ratio=0.15,
-        test_ratio=0.15
-    )
-    splitter.split_dataset()
+    # 分割数据集
+    if not args.no_split:
+        print("Splitting dataset into train, validation, and test sets...")
+        splitter = DatasetSplitter(
+            source_dir=dataset_path,
+            labels_file=labels_file,
+            target_dir=split_dataset_path,
+            train_ratio=args.train_ratio,
+            val_ratio=args.val_ratio,
+            test_ratio=args.test_ratio
+        )
+        splitter.split_dataset()
 
-    # First do data augmentation
-    print("Augmenting training set...")
-    train_augmenter = DatasetAugmenter(augmentation_factor=15, is_training=True)  # Generate 5 augmented versions for each image
-    train_augmenter.augment_dataset(
-        os.path.join(split_dataset_path, 'train'),
-        os.path.join(augmented_dataset_path, 'train'),
-        is_training=True
-    )
+    # 数据增强
+    if not args.no_augment:
+        # 增强训练集
+        print("Augmenting training set...")
+        train_augmenter = DatasetAugmenter(augmentation_factor=args.train_aug_factor, is_training=True)
+        train_augmenter.augment_dataset(
+            os.path.join(split_dataset_path, 'train'),
+            os.path.join(augmented_dataset_path, 'train'),
+            is_training=True
+        )
 
-    # Augment validation set (with light transformation)
-    print("Augmenting validation set...")
-    val_augmenter = DatasetAugmenter(augmentation_factor=15, is_training=True)  # Only original images for validation
-    val_augmenter.augment_dataset(
-        os.path.join(split_dataset_path, 'val'),
-        os.path.join(augmented_dataset_path, 'val'),
-        is_training=True
-    )
+        # 增强验证集
+        print("Augmenting validation set...")
+        val_augmenter = DatasetAugmenter(augmentation_factor=args.val_aug_factor, is_training=True)
+        val_augmenter.augment_dataset(
+            os.path.join(split_dataset_path, 'val'),
+            os.path.join(augmented_dataset_path, 'val'),
+            is_training=True
+        )
 
-    # Augment test set (with light transformation)
-    print("Augmenting test set...")
-    test_augmenter = DatasetAugmenter(augmentation_factor=5, is_training=False)  # Only original images for test
-    test_augmenter.augment_dataset(
-        os.path.join(split_dataset_path, 'test'),
-        os.path.join(augmented_dataset_path, 'test'),
-        is_training=False
-    )
+        # 增强测试集
+        print("Augmenting test set...")
+        test_augmenter = DatasetAugmenter(augmentation_factor=args.test_aug_factor, is_training=False)
+        test_augmenter.augment_dataset(
+            os.path.join(split_dataset_path, 'test'),
+            os.path.join(augmented_dataset_path, 'test'),
+            is_training=False
+        )
 
-    # Visualize some preprocessing steps
-    # Find the first image for visualization
+    # 可视化预处理步骤
+    # 查找第一张图片用于可视化
     df = pd.read_csv(labels_file)
     if len(df) > 0:
         first_image = df.iloc[0]['image_name']
-        sample_img_path = os.path.join(raw_dataset_path, first_image)
+        sample_img_path = os.path.join(dataset_path, first_image)
         if os.path.exists(sample_img_path):
             visualize_preprocessing(
                 sample_img_path,
@@ -1296,7 +1346,33 @@ def main():
     else:
         print("No images found in the labels file")
 
-    # Set up data transforms for training
+    # 如果不训练，则退出
+    if args.no_train:
+        print("Skipping training as requested.")
+
+        # 保存配置信息
+        config = {
+            'backbone': args.backbone,
+            'train_aug_factor': args.train_aug_factor,
+            'val_aug_factor': args.val_aug_factor,
+            'test_aug_factor': args.test_aug_factor,
+            'batch_size': args.batch_size,
+            'initial_lr': args.learning_rate,
+            'num_epochs': args.num_epochs,
+            'unfreeze_at_epoch': args.unfreeze_epoch,
+            'experiment_timestamp': timestamp,
+            'model_type': 'FrozenCNN_with_FC',
+            'dropout_rate': args.dropout_rate,
+            'initial_value': args.initial_value,
+            'no_train': args.no_train
+        }
+
+        with open(os.path.join(experiment_dir, 'config.json'), 'w') as f:
+            json.dump(config, f)
+
+        return
+
+    # 设置训练数据转换
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -1304,7 +1380,7 @@ def main():
                              std=[0.229, 0.224, 0.225])
     ])
 
-    # Load augmented datasets
+    # 加载增强数据集
     train_dataset = RegressionDataset(
         os.path.join(augmented_dataset_path, 'train'),
         transform=transform
@@ -1320,76 +1396,90 @@ def main():
 
     print(f"Dataset sizes: Train={len(train_dataset)}, Val={len(val_dataset)}, Test={len(test_dataset)}")
 
-    # Create data loaders
+    # 创建数据加载器
     train_loader = DataLoader(
         train_dataset,
-        batch_size=32,
+        batch_size=args.batch_size,
         shuffle=True,
-        num_workers=4,
+        num_workers=args.num_workers,
         pin_memory=True
     )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=32,
+        batch_size=args.batch_size,
         shuffle=False,
-        num_workers=4,
+        num_workers=args.num_workers,
         pin_memory=True
     )
     test_loader = DataLoader(
         test_dataset,
-        batch_size=32,
+        batch_size=args.batch_size,
         shuffle=False,
-        num_workers=4,
+        num_workers=args.num_workers,
         pin_memory=True
     )
 
-    # Choose which backbone to use
-    backbone = 'densenet121'  # Options: 'resnet34', 'densenet121', 'mobilenet_v2', etc.
+    # 创建冻结CNN+FC模型
+    model = FrozenCNNRegressor(
+        backbone=args.backbone,
+        pretrained=True,
+        initial_value=args.initial_value,
+        dropout_rate=args.dropout_rate
+    )
 
-    # Create frozen CNN+FC model with increased dropout
-    model = FrozenCNNRegressor(backbone=backbone, pretrained=True, initial_value=15.0, dropout_rate=0.5)
-
-    # Verify which layers are frozen
+    # 验证哪些层被冻结
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"Created frozen CNN+FC model using {backbone} backbone")
+    print(f"Created frozen CNN+FC model using {args.backbone} backbone")
     print(f"Trainable parameters: {trainable_params:,} / Total parameters: {total_params:,} ({trainable_params/total_params:.2%})")
 
-    # Create trainer
+    # 创建训练器
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
         test_loader=test_loader,
         device=device,
-        learning_rate=0.001,
+        learning_rate=args.learning_rate,
         save_dir=experiment_dir
     )
 
-    # Train model, unfreeze last few layers at epoch 80 for fine-tuning
-    trainer.train(num_epochs=200, eval_every=1, unfreeze_at_epoch=80)
+    # 设置早停耐心值
+    trainer.patience = args.patience
 
-    # Evaluate model on all datasets
-    trainer.evaluate_all_datasets()
+    # 训练模型
+    trainer.train(
+        num_epochs=args.num_epochs,
+        eval_every=args.eval_every,
+        unfreeze_at_epoch=args.unfreeze_epoch
+    )
 
-    # Save configuration information
+    # 评估模型
+    if not args.no_eval:
+        trainer.evaluate_all_datasets()
+
+    # 保存配置信息
     config = {
-        'backbone': backbone,
-        'augmentation_factor': 5,
-        'batch_size': 32,
-        'initial_lr': 0.001,
-        'num_epochs': 200,
-        'unfreeze_at_epoch': 80,
+        'backbone': args.backbone,
+        'train_aug_factor': args.train_aug_factor,
+        'val_aug_factor': args.val_aug_factor,
+        'test_aug_factor': args.test_aug_factor,
+        'batch_size': args.batch_size,
+        'initial_lr': args.learning_rate,
+        'num_epochs': args.num_epochs,
+        'unfreeze_at_epoch': args.unfreeze_epoch,
         'experiment_timestamp': timestamp,
         'model_type': 'FrozenCNN_with_FC',
-        'dropout_rate': 0.5,
-        'stratified_sampling': True
+        'dropout_rate': args.dropout_rate,
+        'initial_value': args.initial_value,
+        'best_epoch': trainer.history['best_epoch'],
+        'best_val_loss': float(trainer.history['best_val_loss'])
     }
 
     with open(os.path.join(experiment_dir, 'config.json'), 'w') as f:
         json.dump(config, f)
 
-    # Create inference example code
+    # 创建推理示例代码
     inference_code = """
 # Inference example code
 import torch
@@ -1403,7 +1493,7 @@ def predict_image(model_path, image_path, device='cuda'):
     
     # Create model instance
     from your_model_file import FrozenCNNRegressor  # Import your model class
-    model = FrozenCNNRegressor(backbone='densenet121', pretrained=False)
+    model = FrozenCNNRegressor(backbone='""" + args.backbone + """', pretrained=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.to(device)
     model.eval()
