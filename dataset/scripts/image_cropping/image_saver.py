@@ -12,6 +12,8 @@ front_counter = 1  # front文件夹的图片计数器
 back_counter = 1   # back文件夹的图片计数器
 save_path = "./images"  # 保存图片的基础目录
 current_frame = None  # 当前帧图像
+last_saved_file = None  # 最后保存的文件路径
+last_saved_type = None  # 最后保存的文件类型 ('front' 或 'back')
 
 # 回调函数：接收并处理图像
 def image_callback(msg):
@@ -29,20 +31,24 @@ def image_callback(msg):
         save_image("front")
     elif key == ord('b'):  # 如果按下'b'键，保存到back文件夹
         save_image("back")
+    elif key == ord('z'):  # 如果按下'z'键，撤销上一次保存操作
+        undo_last_save()
     elif key == ord('q'):  # 如果按下'q'键
         rospy.signal_shutdown("User requested shutdown")
 
 # 保存图片函数
 def save_image(folder):
-    global front_counter, back_counter
+    global front_counter, back_counter, last_saved_file, last_saved_type
 
     # 根据文件夹选择对应的计数器
     if folder == "front":
         counter = front_counter
         front_counter += 1
+        prefix = "front"
     else:  # folder == "back"
         counter = back_counter
         back_counter += 1
+        prefix = "back"
 
     # 构建保存路径
     target_dir = os.path.join(save_path, folder)
@@ -51,15 +57,44 @@ def save_image(folder):
     if not os.path.exists(target_dir):
         os.makedirs(target_dir)
 
-    # 构造图片文件名
-    filename = os.path.join(target_dir, f"{counter}.jpg")
+    # 构造图片文件名，使用前缀_编号的格式
+    filename = os.path.join(target_dir, f"{prefix}_{counter}.jpg")
 
     # 保存当前帧
     if current_frame is not None:
         cv2.imwrite(filename, current_frame)
         rospy.loginfo(f"Saved image to {folder}: {filename} (Counter: {counter})")
+
+        # 记录本次保存的文件信息，用于撤销操作
+        last_saved_file = filename
+        last_saved_type = folder
     else:
         rospy.logwarn("No image to save")
+
+# 撤销上一次保存操作
+def undo_last_save():
+    global front_counter, back_counter, last_saved_file, last_saved_type
+
+    if last_saved_file and os.path.exists(last_saved_file):
+        try:
+            # 删除文件
+            os.remove(last_saved_file)
+
+            # 根据文件类型减少对应的计数器
+            if last_saved_type == "front":
+                front_counter -= 1
+                rospy.loginfo(f"Undid last front save: {last_saved_file}. Next front counter: {front_counter}")
+            elif last_saved_type == "back":
+                back_counter -= 1
+                rospy.loginfo(f"Undid last back save: {last_saved_file}. Next back counter: {back_counter}")
+
+            # 重置最后保存的文件信息
+            last_saved_file = None
+            last_saved_type = None
+        except Exception as e:
+            rospy.logerr(f"Error undoing last save: {e}")
+    else:
+        rospy.logwarn("No previous save to undo or file no longer exists")
 
 def parse_arguments():
     """解析命令行参数"""
@@ -100,8 +135,9 @@ if __name__ == "__main__":
     rospy.Subscriber(image_topic, Image, image_callback)
 
     # 打开窗口并显示操作说明
-    rospy.loginfo("Press 'f' to save an image to front folder")
-    rospy.loginfo("Press 'b' to save an image to back folder")
+    rospy.loginfo("Press 'f' to save an image to front folder (as front_N.jpg)")
+    rospy.loginfo("Press 'b' to save an image to back folder (as back_N.jpg)")
+    rospy.loginfo("Press 'z' to undo the last save operation")
     rospy.loginfo("Press 'q' to quit.")
     rospy.loginfo(f"Images will be saved to: {save_path}/front or {save_path}/back")
     rospy.loginfo(f"Front folder starting from image number: {front_counter}")
