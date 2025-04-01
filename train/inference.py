@@ -1,37 +1,112 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
-"""
-Batch Image Texture Analysis Tool
-Usage: python inference.py --model_path MODEL_PATH --image_dir IMAGE_DIR [--output_dir OUTPUT_DIR] [--device DEVICE] [--csv_path CSV_PATH]
-"""
-
+# 导入所需的库
 import os
-import sys
-import argparse
-import time
 import json
-import torch
-import torch.nn as nn
 import numpy as np
 import pandas as pd
-from PIL import Image, ImageDraw
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, models
+from PIL import Image, ImageDraw
 import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap
-import cv2
 from tqdm import tqdm
+import argparse
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import glob
-import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
-# Define model class - Modified to match the saved model structure
+# 设置随机种子以确保结果可复现
+torch.manual_seed(42)
+np.random.seed(42)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(42)
+
+# 定义内部黑色边框添加类（与训练代码保持一致）
+class InnerBlackBorderAdder(object):
+    """Add black border inside the image"""
+    def __init__(self, border_width=15):
+        self.border_width = border_width
+
+    def __call__(self, img):
+        width, height = img.size
+        bordered_img = img.copy()
+        draw = ImageDraw.Draw(bordered_img)
+
+        draw.rectangle([(0, 0), (width, self.border_width)], fill="black")
+        draw.rectangle([(0, height - self.border_width), (width, height)], fill="black")
+        draw.rectangle([(0, 0), (self.border_width, height)], fill="black")
+        draw.rectangle([(width - self.border_width, 0), (width, height)], fill="black")
+
+        return bordered_img
+
+# 定义回归数据集类
+class RegressionDataset(Dataset):
+    """Custom dataset class"""
+    def __init__(self, data_dir, labels_file=None, transform=None):
+        self.data_dir = data_dir
+        self.transform = transform
+
+        # If a labels file is provided, read it
+        if labels_file:
+            if os.path.exists(labels_file):
+                self.labels_df = pd.read_csv(labels_file)
+            else:
+                raise ValueError(f"Labels file not found: {labels_file}")
+        else:
+            # Try to find the subset name and read the corresponding labels file
+            subset_name = os.path.basename(data_dir)  # 'train', 'val', or 'test'
+            labels_file = os.path.join(data_dir, f'{subset_name}_labels.csv')
+
+            if os.path.exists(labels_file):
+                self.labels_df = pd.read_csv(labels_file)
+            else:
+                # If no labels file, assume we only need predictions
+                self.labels_df = None
+                # Get all image files in the directory
+                image_extensions = ['.jpg', '.jpeg', '.png', '.bmp']
+                image_files = []
+                for ext in image_extensions:
+                    image_files.extend(glob.glob(os.path.join(data_dir, f'*{ext}')))
+
+                # Create a dataframe without labels
+                self.labels_df = pd.DataFrame({
+                    'image_name': [os.path.basename(f) for f in image_files],
+                    'label': [float('nan')] * len(image_files)
+                })
+
+    def __len__(self):
+        return len(self.labels_df)
+
+    def __getitem__(self, idx):
+        # Get image path and label
+        row = self.labels_df.iloc[idx]
+        img_path = os.path.join(self.data_dir, row['image_name'])
+
+        # Read image
+        try:
+            image = Image.open(img_path).convert('RGB')
+        except Exception as e:
+            print(f"Cannot read image {img_path}: {e}")
+            # Return a blank image as fallback
+            image = Image.new('RGB', (224, 224), color='gray')
+
+        # Apply transformations
+        if self.transform:
+            image = self.transform(image)
+
+        # If there's a label, return image and label; otherwise just return image
+        if not pd.isna(row['label']):
+            return image, torch.tensor(row['label'], dtype=torch.float32)
+        else:
+            return image, torch.tensor(float('nan'), dtype=torch.float32)
+
+# 定义冻结CNN回归模型（与训练代码保持一致）
 class FrozenCNNRegressor(nn.Module):
     """Texture regression model using frozen CNN feature extractor and trainable FC layers"""
-    def __init__(self, backbone='densenet121', pretrained=True, initial_value=15.0):
+    def __init__(self, backbone='densenet121', pretrained=True, initial_value=15.0, dropout_rate=0.5):
         super(FrozenCNNRegressor, self).__init__()
 
-        # Load pre-trained backbone network
+        # Load pretrained backbone network
         if backbone == 'densenet121':
             base_model = models.densenet121(weights='DEFAULT' if pretrained else None)
             self.features = base_model.features
@@ -42,7 +117,7 @@ class FrozenCNNRegressor(nn.Module):
             feature_dim = base_model.classifier.in_features  # 1664
         elif backbone == 'resnet18':
             base_model = models.resnet18(weights='DEFAULT' if pretrained else None)
-            # Remove global avg pooling and fc layers
+            # Remove global average pooling and fully connected layers
             self.features = nn.Sequential(*list(base_model.children())[:-2])
             feature_dim = 512
         elif backbone == 'resnet34':
@@ -63,22 +138,22 @@ class FrozenCNNRegressor(nn.Module):
         # Global average pooling layer
         self.global_pool = nn.AdaptiveAvgPool2d(1)
 
-        # Regression head with L2 regularization effect (similar to Ridge regression) - Modified to match saved model structure
+        # Regression head
         self.regressor = nn.Sequential(
             nn.Flatten(),
             nn.Linear(feature_dim, 256),
             nn.BatchNorm1d(256),
             nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, 128),  # Changed to 128
-            nn.BatchNorm1d(128),  # Changed to 128
+            nn.Dropout(dropout_rate),
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
             nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, 64),   # Added layer
-            nn.BatchNorm1d(64),   # Added layer
-            nn.ReLU(),            # Added layer
-            nn.Dropout(0.2),      # Added layer
-            nn.Linear(64, 1)      # Final output layer
+            nn.Dropout(dropout_rate * 0.8),
+            nn.Linear(128, 64),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate * 0.6),
+            nn.Linear(64, 1)
         )
 
         # Initialize the bias of the final layer to the specified value
@@ -97,628 +172,483 @@ class FrozenCNNRegressor(nn.Module):
 
         return output
 
-def load_model(model_path, device='cuda'):
-    """Load pretrained model - Using a safer approach"""
-    device = torch.device(device if torch.cuda.is_available() else 'cpu')
+class ModelInference:
+    """Model inference class"""
+    def __init__(self, model_path, backbone='densenet121', device='cuda', border_width=70, output_dir='inference_results'):
+        # 设置设备
+        self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
+        print(f"Using device: {self.device}")
 
-    try:
-        # First try to load model weights only - safer approach
+        # 保存输出目录
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+
+        # 加载模型
+        self.model = self.load_model(model_path, backbone)
+
+        # 设置转换 - 确保与训练时完全一致
+        self.transform = transforms.Compose([
+            InnerBlackBorderAdder(border_width=border_width),
+            transforms.Resize((224, 224)),  # 与训练保持一致
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                 std=[0.229, 0.224, 0.225])
+        ])
+
+        print("Preprocessing pipeline initialized with:")
+        print(f"  - Border width: {border_width}")
+        print(f"  - Image size: 224x224")
+
+    def load_model(self, model_path, backbone):
+        """Load model"""
         try:
-            print("Attempting to load model in safe mode (weights_only=True)...")
-            # Create empty model
-            model = FrozenCNNRegressor(backbone='densenet121', pretrained=False)
+            print(f"Loading model from {model_path}")
+            checkpoint = torch.load(model_path, map_location=self.device)
 
-            # Try to load in safe mode with weights_only=True
-            checkpoint = torch.load(model_path, map_location=device, weights_only=True)
+            # 创建模型实例
+            model = FrozenCNNRegressor(
+                backbone=backbone,
+                pretrained=False,
+                initial_value=15.0,  # 使用训练时的初始值
+                dropout_rate=0.5     # 使用训练时的dropout率
+            )
 
-            # If it's a state dict, load directly
-            if not isinstance(checkpoint, dict) or 'model_state_dict' not in checkpoint:
-                model.load_state_dict(checkpoint, strict=False)  # Use strict=False to allow partial loading
+            # 加载模型权重
+            if 'model_state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['model_state_dict'])
+                print("Loaded model state dict")
             else:
-                model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+                model.load_state_dict(checkpoint)
+                print("Loaded entire model")
 
-            print("Model loaded successfully in safe mode")
-
+            model.to(self.device)
+            model.eval()  # 确保模型处于评估模式
+            print(f"Model successfully loaded and set to evaluation mode")
+            return model
         except Exception as e:
-            print(f"Safe mode loading failed, trying compatibility mode: {e}")
-            # If safe mode fails, use compatibility mode (not recommended, but ensures old models can be loaded)
-            print("WARNING: Using unsafe loading method, ensure you trust this model file")
-            checkpoint = torch.load(model_path, map_location=device)
+            raise Exception(f"Error loading model: {e}")
 
-            # If it's a complete model rather than a dict
-            if not isinstance(checkpoint, dict):
-                model = checkpoint
-            # If it's a dict containing state_dict
-            elif 'model_state_dict' in checkpoint:
-                model = FrozenCNNRegressor(backbone='densenet121', pretrained=False)
-                model.load_state_dict(checkpoint['model_state_dict'], strict=False)
-            else:
-                # If it's a direct state_dict
-                model = FrozenCNNRegressor(backbone='densenet121', pretrained=False)
-                model.load_state_dict(checkpoint, strict=False)
-
-        model = model.to(device)
-        model.eval()
-        print(f"Model successfully loaded: {model_path}")
-        return model
-
-    except Exception as e:
-        print(f"Model loading failed: {e}")
-        sys.exit(1)
-
-def get_transform():
-    """Get image transformations"""
-    return transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225])
-    ])
-
-def add_inner_black_border(image, border_width=70):
-    """Add an inner black border that covers the edge portion of the image"""
-    if isinstance(image, np.ndarray):
-        # Convert numpy array to PIL Image
-        image = Image.fromarray(image)
-
-    # Get image dimensions
-    width, height = image.size
-
-    # Create a copy of the image
-    bordered_image = image.copy()
-
-    # Create PIL drawing object
-    draw = ImageDraw.Draw(bordered_image)
-
-    # Draw black rectangles on all four sides to create inner border
-    # Top border
-    draw.rectangle([(0, 0), (width, border_width)], fill='black')
-    # Bottom border
-    draw.rectangle([(0, height-border_width), (width, height)], fill='black')
-    # Left border
-    draw.rectangle([(0, 0), (border_width, height)], fill='black')
-    # Right border
-    draw.rectangle([(width-border_width, 0), (width, height)], fill='black')
-
-    return bordered_image
-
-def predict_single_image(model, image_path, transform, device):
-    """Predict for a single image"""
-    try:
-        # Load image
-        image = Image.open(image_path).convert('RGB')
-
-        # Save original size for later visualization
-        original_size = image.size
-
-        # Apply transformations
-        input_tensor = transform(image).unsqueeze(0).to(device)
-
-        # Perform inference
-        with torch.no_grad():
-            prediction = model(input_tensor).item()
-
-        return {
-            'path': image_path,
-            'prediction': prediction,
-            'image': image,
-            'original_size': original_size,
-            'status': 'success'
-        }
-    except Exception as e:
-        print(f"Failed to process image {image_path}: {e}")
-        return {
-            'path': image_path,
-            'prediction': None,
-            'status': 'failed',
-            'error': str(e)
-        }
-
-def generate_heatmap(prediction, min_val=0, max_val=30):
-    """Generate heatmap color based on prediction value"""
-    # Create custom colormap, from blue (low) to red (high)
-    colors = [(0, 0, 1), (0, 1, 1), (0, 1, 0), (1, 1, 0), (1, 0, 0)]
-    cmap = LinearSegmentedColormap.from_list('custom_cmap', colors, N=100)
-
-    # Normalize prediction to 0-1 range
-    normalized = (prediction - min_val) / (max_val - min_val)
-    normalized = np.clip(normalized, 0, 1)  # Ensure it's in 0-1 range
-
-    # Get RGB color
-    rgb_color = cmap(normalized)[:3]  # Remove alpha channel
-
-    # Convert RGB to 0-255 integers
-    color_8bit = tuple(int(c * 255) for c in rgb_color)
-
-    return color_8bit, normalized
-
-def create_visualization(result, output_path, global_min=0, global_max=30, reference_value=None, border_width=70):
-    """Create result visualization"""
-    if result['status'] != 'success':
-        return
-
-    image = result['image']
-    prediction = result['prediction']
-
-    # Add inner black border to the image - same as used in training
-    bordered_image = add_inner_black_border(image, border_width=border_width)
-
-    # Calculate color using global min and max
-    color, normalized = generate_heatmap(prediction, global_min, global_max)
-
-    # Create figure
-    fig, ax = plt.subplots(figsize=(10, 6))
-
-    # Show image with inner black border
-    ax.imshow(bordered_image)
-
-    # Add prediction value text with color, make it visible on any background
-    if reference_value is not None:
-        error = prediction - reference_value
-        text = f"Predicted: {prediction:.2f} | Reference: {reference_value:.2f} | Error: {error:.2f}"
-    else:
-        text = f"Predicted: {prediction:.2f}"
-
-    # Place text near the center to avoid the border
-    width, height = image.size
-    ax.text(width/2, height/2 - 50, text, fontsize=16, weight='bold',
-            bbox=dict(facecolor='white', alpha=0.7, edgecolor='black', boxstyle='round,pad=0.5'),
-            ha='center')
-
-    # Add colorbar indicator
-    sm = plt.cm.ScalarMappable(cmap=plt.cm.coolwarm,
-                               norm=plt.Normalize(vmin=global_min, vmax=global_max))
-    sm.set_array([])
-    cbar = plt.colorbar(sm, ax=ax)
-    cbar.set_label('Prediction Range')
-
-    # Mark current value on the colorbar
-    cbar.ax.plot([0, 1], [prediction, prediction], 'k-', linewidth=2)
-
-    # Turn off axes
-    ax.axis('off')
-
-    # Set title
-    filename = os.path.basename(result['path'])
-    ax.set_title(f"File: {filename} - Prediction: {prediction:.2f}", fontsize=14)
-
-    # Save image
-    plt.savefig(output_path, dpi=200, bbox_inches='tight')
-    plt.close(fig)
-
-def create_gallery(results, output_dir, rows=5, global_min=None, global_max=None, reference_values=None, image_id_map=None, border_width=70):
-    """Create image gallery"""
-    # Skip failed images
-    valid_results = [r for r in results if r['status'] == 'success']
-
-    if not valid_results:
-        print("No valid results to generate gallery")
-        return
-
-    # If global range not specified, calculate from data
-    if global_min is None:
-        global_min = min(r['prediction'] for r in valid_results)
-    if global_max is None:
-        global_max = max(r['prediction'] for r in valid_results)
-
-    # Sort by prediction value
-    valid_results.sort(key=lambda x: x['prediction'])
-
-    # Calculate layout
-    n_images = len(valid_results)
-    cols = (n_images + rows - 1) // rows  # Ceiling division
-
-    # Create canvas
-    fig, axes = plt.subplots(rows, cols, figsize=(cols*4, rows*4))
-    if n_images == 1:
-        axes = np.array([axes])
-    axes = axes.flatten()
-
-    # Add each image
-    for i, result in enumerate(valid_results):
-        if i < len(axes):
-            ax = axes[i]
-            # Add inner black border to image
-            bordered_image = add_inner_black_border(result['image'], border_width=border_width)
-            ax.imshow(bordered_image)
-
-            # Add prediction value text
-            pred = result['prediction']
-            filename = os.path.basename(result['path'])
-
-            # Check if we have a reference value for this image using image_id_map
-            ref_value = None
-            if image_id_map is not None and result['path'] in image_id_map:
-                id_val = image_id_map[result['path']]
-                if id_val in reference_values:
-                    ref_value = reference_values[id_val]
-
-            if ref_value is not None:
-                error = pred - ref_value
-                title = f"{filename}\nPred: {pred:.2f} | Ref: {ref_value:.2f} | Err: {error:.2f}"
-            else:
-                title = f"{filename}\nPrediction: {pred:.2f}"
-
-            ax.set_title(title, fontsize=10)
-
-            # Turn off axes
-            ax.axis('off')
-
-    # Hide extra subplots
-    for i in range(n_images, len(axes)):
-        axes[i].axis('off')
-
-    # Adjust layout
-    plt.tight_layout()
-
-    # Add colorbar
-    sm = plt.cm.ScalarMappable(cmap=plt.cm.coolwarm,
-                               norm=plt.Normalize(vmin=global_min, vmax=global_max))
-    sm.set_array([])
-    cbar = fig.colorbar(sm, ax=axes, orientation='horizontal',
-                        pad=0.01, fraction=0.05, aspect=40)
-    cbar.set_label('Prediction Range')
-
-    # Add title
-    fig.suptitle(f'Batch Prediction Results Overview - {n_images} Images', fontsize=16, y=1.02)
-
-    # Save gallery
-    gallery_path = os.path.join(output_dir, 'results_gallery.png')
-    plt.savefig(gallery_path, dpi=150, bbox_inches='tight')
-    print(f"Gallery saved to: {gallery_path}")
-    plt.close(fig)
-
-def extract_id_from_filename(filename):
-    """Extract numeric ID from filename like 'cropped_raw_1.jpg'"""
-    # Pattern to match numbers at the end of the filename before extension
-    match = re.search(r'(\d+)(?:\.[^.]+)?$', filename)
-    if match:
-        return match.group(1)
-    return None
-
-def process_image_folder(model_path, image_dir, output_dir=None, device='cuda', n_workers=4, csv_path=None, border_width=70):
-    """Process entire image folder"""
-    start_time = time.time()
-
-    # Set output directory
-    if output_dir is None:
-        output_dir = os.path.join(os.path.dirname(image_dir), 'inference_results')
-
-    # Create output directories
-    os.makedirs(output_dir, exist_ok=True)
-    os.makedirs(os.path.join(output_dir, 'visualizations'), exist_ok=True)
-
-    # Load reference values from CSV if provided
-    reference_values = None
-    if csv_path and os.path.exists(csv_path):
+    def predict_single_image(self, image_path):
+        """Predict a single image"""
         try:
-            print(f"Loading reference values from: {csv_path}")
-            csv_data = pd.read_csv(csv_path)
+            # 加载图像
+            image = Image.open(image_path).convert('RGB')
+            print(f"Original image size: {image.size}")
 
-            # Print out the columns in the CSV file for debugging
-            print(f"CSV columns: {list(csv_data.columns)}")
+            # 预处理图像
+            input_tensor = self.transform(image)
+            print(f"Transformed tensor shape: {input_tensor.shape}")
 
-            # Check for ID column
-            id_col = None
-            for col_name in ['ID', 'Id', 'id', 'sample_id', 'sampleid', 'sample', 'SampleId']:
-                if col_name in csv_data.columns:
-                    id_col = col_name
-                    print(f"Using '{id_col}' as ID column")
-                    break
+            input_tensor = input_tensor.unsqueeze(0).to(self.device)
 
-            # Check for rate/value column
-            rate_col = None
-            for col_name in ['ComputedRate', 'computedrate', 'computed_rate', 'rate', 'density', 'value', 'prediction', 'target', 'label', 'Rate']:
-                if col_name in csv_data.columns:
-                    rate_col = col_name
-                    print(f"Using '{rate_col}' as reference value column")
-                    break
+            # 执行推理
+            self.model.eval()  # 确保模型处于评估模式
+            with torch.no_grad():
+                prediction = self.model(input_tensor).item()
 
-            # Create a dictionary of ID -> reference value
-            if id_col is not None and rate_col is not None:
-                reference_values = {}
-
-                for _, row in csv_data.iterrows():
-                    if pd.notna(row[id_col]) and pd.notna(row[rate_col]):
-                        # Convert ID to string and remove decimal part if it's like "1.0"
-                        id_raw = row[id_col]
-                        if isinstance(id_raw, (int, float)):
-                            id_value = str(int(id_raw) if id_raw == int(id_raw) else id_raw)
-                        else:
-                            id_value = str(id_raw)
-                            if id_value.endswith('.0'):
-                                id_value = id_value[:-2]
-
-                        rate_value = float(row[rate_col])
-                        reference_values[id_value] = rate_value
-
-                print(f"Loaded {len(reference_values)} reference values from CSV")
-                print(f"Example ID to rate mapping: {list(reference_values.items())[:3]}")
-            else:
-                print("Could not find suitable columns for ID and reference values")
-                print("Required: a column for ID and a column for reference values")
-                print("Available columns:", list(csv_data.columns))
+            print(f"Raw prediction: {prediction}")
+            return prediction
         except Exception as e:
-            print(f"Error loading reference values from CSV: {e}")
-            reference_values = None
+            print(f"Error predicting image {image_path}: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
-    # Load model
-    model = load_model(model_path, device)
-    transform = get_transform()
-    device = torch.device(device if torch.cuda.is_available() else 'cpu')
+    def predict_multiple_images(self, image_paths):
+        """Predict multiple images"""
+        predictions = []
+        self.model.eval()  # 确保模型处于评估模式
 
-    # Get all image files
-    image_extensions = ('*.jpg', '*.jpeg', '*.png', '*.bmp', '*.tif', '*.tiff')
-    image_files = []
-    for ext in image_extensions:
-        image_files.extend(glob.glob(os.path.join(image_dir, ext)))
-        image_files.extend(glob.glob(os.path.join(image_dir, '**', ext), recursive=True))
-
-    image_files = sorted(list(set(image_files)))  # Remove duplicates and sort
-
-    if not image_files:
-        print(f"No image files found in {image_dir}")
-        sys.exit(1)
-
-    print(f"Found {len(image_files)} image files")
-
-    # Create image to ID mapping
-    image_id_map = {}
-    if reference_values:
-        print("Sample image filenames:")
-        for img_path in image_files[:5]:  # Print first 5 image filenames
-            print(f"  - {os.path.basename(img_path)}")
-
-        print("Sample IDs from CSV:")
-        sample_ids = list(reference_values.keys())[:5]  # First 5 IDs
-        for id_val in sample_ids:
-            print(f"  - {id_val}")
-
-        print("Extracting numeric IDs from filenames...")
-
-        matched_count = 0
-        for img_path in image_files:
-            filename = os.path.basename(img_path)
-            extracted_id = extract_id_from_filename(filename)
-
-            if extracted_id and extracted_id in reference_values:
-                image_id_map[img_path] = extracted_id
-                matched_count += 1
-                if matched_count <= 5:  # Print first 5 matches
-                    print(f"✓ Matched: {filename} with ID {extracted_id} → Rate {reference_values[extracted_id]}")
-
-        print(f"Matched {matched_count} out of {len(image_files)} images with reference values")
-
-    # Batch predictions
-    results = []
-
-    with ThreadPoolExecutor(max_workers=n_workers) as executor:
-        # Create tasks
-        future_to_path = {
-            executor.submit(
-                predict_single_image, model, path, transform, device
-            ): path for path in image_files
-        }
-
-        # Process results
-        for future in tqdm(as_completed(future_to_path), total=len(image_files), desc="Processing images"):
-            result = future.result()
-            results.append(result)
-
-    # Calculate success rate
-    success_count = sum(1 for r in results if r['status'] == 'success')
-    print(f"Processing completed: {success_count}/{len(results)} images successfully processed")
-
-    # Prepare CSV data
-    csv_data = []
-    valid_predictions = []
-    errors = []
-
-    for result in results:
-        img_path = result['path']
-        filename = os.path.basename(img_path)
-        row = {
-            'image_path': img_path,
-            'status': result['status']
-        }
-
-        if result['status'] == 'success':
-            row['prediction'] = result['prediction']
-            valid_predictions.append(result['prediction'])
-
-            # Find matching ID in the filename and get reference value if available
-            if img_path in image_id_map:
-                id_val = image_id_map[img_path]
-                ref_value = reference_values[id_val]
-                error = result['prediction'] - ref_value
-                row['reference'] = ref_value
-                row['error'] = error
-                row['matched_id'] = id_val
-                errors.append(error)
-        else:
-            row['error'] = result['error']
-
-        csv_data.append(row)
-
-    # Save CSV results
-    csv_path = os.path.join(output_dir, 'results.csv')
-    pd.DataFrame(csv_data).to_csv(csv_path, index=False)
-    print(f"Results saved to: {csv_path}")
-
-    # Generate visualizations for each image
-    if valid_predictions:
-        global_min = min(valid_predictions)
-        global_max = max(valid_predictions)
-
-        print("Generating visualizations for each image...")
-        for result in tqdm(results):
-            if result['status'] == 'success':
-                img_path = result['path']
-                base_name = os.path.basename(img_path)
-                vis_path = os.path.join(output_dir, 'visualizations', f"{os.path.splitext(base_name)[0]}_result.png")
-
-                # Get reference value if available
-                ref_value = None
-                if img_path in image_id_map:
-                    id_val = image_id_map[img_path]
-                    ref_value = reference_values[id_val]
-
-                create_visualization(result, vis_path, global_min, global_max, ref_value, border_width)
-
-        # Create gallery
-        print("Generating image gallery...")
-        create_gallery(results, output_dir, global_min=global_min, global_max=global_max,
-                       reference_values=reference_values, image_id_map=image_id_map, border_width=border_width)
-
-    # Generate statistics
-    if valid_predictions:
-        stats = {
-            'processed_images': len(results),
-            'successful': success_count,
-            'failed': len(results) - success_count,
-            'min_prediction': float(min(valid_predictions)),
-            'max_prediction': float(max(valid_predictions)),
-            'mean_prediction': float(np.mean(valid_predictions)),
-            'median_prediction': float(np.median(valid_predictions)),
-            'std_prediction': float(np.std(valid_predictions)),
-            'processing_time_seconds': time.time() - start_time
-        }
-
-        # Add error statistics if reference values were provided
-        if errors:
-            stats.update({
-                'mean_error': float(np.mean(errors)),
-                'median_error': float(np.median(errors)),
-                'max_abs_error': float(np.max(np.abs(errors))),
-                'mean_abs_error': float(np.mean(np.abs(errors))),
-                'std_error': float(np.std(errors)),
-                'rmse': float(np.sqrt(np.mean(np.array(errors)**2)))
+        for path in tqdm(image_paths, desc="Predicting multiple images"):
+            pred = self.predict_single_image(path)
+            predictions.append({
+                'image_path': path,
+                'prediction': pred
             })
 
-        # Save statistics
-        stats_path = os.path.join(output_dir, 'statistics.json')
-        with open(stats_path, 'w') as f:
-            json.dump(stats, f, indent=4)
+        return predictions
 
-        print(f"Statistics saved to: {stats_path}")
+    def evaluate_dataset(self, data_dir, labels_file=None, batch_size=32, num_workers=4):
+        """Evaluate entire dataset and identify samples with largest errors"""
+        # Create dataset and dataloader
+        dataset = RegressionDataset(data_dir, labels_file, transform=self.transform)
+        dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=True
+        )
 
-        # Draw histograms
-        # Prediction histogram
-        plt.figure(figsize=(10, 6))
-        plt.hist(valid_predictions, bins=20, alpha=0.7, color='royalblue')
-        plt.axvline(np.mean(valid_predictions), color='r', linestyle='dashed', linewidth=2, label=f'Mean: {np.mean(valid_predictions):.2f}')
-        plt.axvline(np.median(valid_predictions), color='g', linestyle='dashed', linewidth=2, label=f'Median: {np.median(valid_predictions):.2f}')
-        plt.title('Prediction Value Distribution')
-        plt.xlabel('Prediction Value')
-        plt.ylabel('Frequency')
-        plt.grid(alpha=0.3)
-        plt.legend()
+        print(f"Evaluating dataset with {len(dataset)} images")
+        print(f"Using batch size: {batch_size}")
 
-        # Save histogram
-        hist_path = os.path.join(output_dir, 'prediction_histogram.png')
-        plt.savefig(hist_path, dpi=150, bbox_inches='tight')
+        # Store predictions and true labels
+        all_predictions = []
+        all_true_values = []
+        image_names = []
+
+        # Perform inference
+        self.model.eval()
+        with torch.no_grad():
+            for i, (images, labels) in enumerate(tqdm(dataloader, desc="Evaluating dataset")):
+                images = images.to(self.device)
+
+                # Get image names for current batch
+                batch_indices = list(range(i * batch_size, min((i + 1) * batch_size, len(dataset))))
+                batch_image_names = [dataset.labels_df.iloc[idx]['image_name'] for idx in batch_indices]
+
+                # Predict
+                outputs = self.model(images)
+
+                # Store results
+                all_predictions.extend(outputs.cpu().numpy())
+                all_true_values.extend(labels.cpu().numpy())
+                image_names.extend(batch_image_names)
+
+        # Create results dataframe
+        results_df = pd.DataFrame({
+            'image_name': image_names,
+            'prediction': all_predictions,
+            'true_value': all_true_values
+        })
+
+        # Calculate metrics (if true labels exist)
+        metrics = {}
+        has_labels = not np.isnan(all_true_values).all()
+
+        if has_labels:
+            # Filter out NaN values
+            valid_indices = ~np.isnan(all_true_values)
+            valid_results_df = results_df[valid_indices].copy()
+
+            # Calculate absolute errors
+            valid_results_df['abs_error'] = np.abs(valid_results_df['prediction'] - valid_results_df['true_value'])
+            valid_results_df['error'] = valid_results_df['prediction'] - valid_results_df['true_value']
+
+            # Sort by absolute error (descending)
+            valid_results_df = valid_results_df.sort_values('abs_error', ascending=False)
+
+            # Extract top N samples with largest errors
+            top_n_errors = 5  # 您可以根据需要调整这个数字
+            largest_errors_df = valid_results_df.head(top_n_errors)
+
+            print(f"\n===== Top {top_n_errors} Samples with Largest Errors =====")
+            for idx, row in largest_errors_df.iterrows():
+                print(f"Image: {row['image_name']}")
+                print(f"  True Value: {row['true_value']:.2f}")
+                print(f"  Prediction: {row['prediction']:.2f}")
+                print(f"  Abs Error: {row['abs_error']:.2f}")
+                print(f"  Error: {row['error']:.2f} ({'underestimated' if row['error'] < 0 else 'overestimated'})")
+                print("-" * 50)
+
+            # Save these images for further analysis
+            error_analysis_dir = os.path.join(self.output_dir, 'error_analysis')
+            os.makedirs(error_analysis_dir, exist_ok=True)
+
+            # Copy the images with largest errors to the analysis directory
+            for idx, row in largest_errors_df.iterrows():
+                img_path = os.path.join(data_dir, row['image_name'])
+                if os.path.exists(img_path):
+                    # Load and save the image with error information in the filename
+                    img = Image.open(img_path)
+                    error_info = f"true_{row['true_value']:.2f}_pred_{row['prediction']:.2f}_err_{row['error']:.2f}"
+                    save_path = os.path.join(error_analysis_dir, f"{os.path.splitext(row['image_name'])[0]}_{error_info}.png")
+                    img.save(save_path)
+
+                    # Also save a visualization with the error information
+                    self.visualize_prediction(img, row['true_value'], row['prediction'], save_path.replace('.png', '_viz.png'))
+
+            print(f"\nError analysis images saved to: {error_analysis_dir}")
+
+            # Save detailed error analysis to CSV
+            largest_errors_df.to_csv(os.path.join(error_analysis_dir, 'largest_errors.csv'), index=False)
+
+            # Calculate standard metrics
+            valid_preds = valid_results_df['prediction'].values
+            valid_true = valid_results_df['true_value'].values
+
+            metrics['mse'] = mean_squared_error(valid_true, valid_preds)
+            metrics['rmse'] = np.sqrt(metrics['mse'])
+            metrics['mae'] = mean_absolute_error(valid_true, valid_preds)
+            metrics['r2'] = r2_score(valid_true, valid_preds)
+            metrics['mean_error'] = np.mean(valid_preds - valid_true)
+            metrics['std_error'] = np.std(valid_preds - valid_true)
+            metrics['max_error'] = np.max(np.abs(valid_preds - valid_true))
+            metrics['min_error'] = np.min(np.abs(valid_preds - valid_true))
+
+            # Calculate error distribution
+            errors = valid_preds - valid_true
+            metrics['error_percentiles'] = {
+                '10%': np.percentile(np.abs(errors), 10),
+                '25%': np.percentile(np.abs(errors), 25),
+                '50%': np.percentile(np.abs(errors), 50),
+                '75%': np.percentile(np.abs(errors), 75),
+                '90%': np.percentile(np.abs(errors), 90),
+                '95%': np.percentile(np.abs(errors), 95),
+                '99%': np.percentile(np.abs(errors), 99)
+            }
+
+            # Calculate proportion of samples within different error ranges
+            metrics['error_ranges'] = {
+                '<0.5': np.mean(np.abs(errors) < 0.5) * 100,
+                '<1.0': np.mean(np.abs(errors) < 1.0) * 100,
+                '<2.0': np.mean(np.abs(errors) < 2.0) * 100,
+                '<5.0': np.mean(np.abs(errors) < 5.0) * 100,
+                '>5.0': np.mean(np.abs(errors) >= 5.0) * 100
+            }
+
+            # Visualize results
+            self.visualize_evaluation_results(valid_true, valid_preds, metrics)
+
+        return results_df, metrics
+
+    def visualize_evaluation_results(self, true_values, predictions, metrics):
+        """
+        Visualize evaluation results with scatter plots and error histograms
+        """
+        # Create output directory for plots
+        plots_dir = os.path.join(self.output_dir, 'evaluation_plots')
+        os.makedirs(plots_dir, exist_ok=True)
+
+        # 1. Scatter plot of predictions vs true values
+        plt.figure(figsize=(10, 8))
+        plt.scatter(true_values, predictions, alpha=0.6)
+
+        # Add perfect prediction line
+        min_val = min(min(true_values), min(predictions))
+        max_val = max(max(true_values), max(predictions))
+        plt.plot([min_val, max_val], [min_val, max_val], 'r--')
+
+        plt.xlabel('True Values')
+        plt.ylabel('Predictions')
+        plt.title(f'Predictions vs True Values\nR² = {metrics["r2"]:.4f}, RMSE = {metrics["rmse"]:.4f}')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(plots_dir, 'scatter_plot.png'), dpi=200)
         plt.close()
-        print(f"Prediction histogram saved to: {hist_path}")
 
-        # If we have errors, generate error histogram
-        if errors:
-            plt.figure(figsize=(10, 6))
-            plt.hist(errors, bins=20, alpha=0.7, color='salmon')
-            plt.axvline(np.mean(errors), color='r', linestyle='dashed', linewidth=2, label=f'Mean: {np.mean(errors):.2f}')
-            plt.axvline(0, color='k', linestyle='solid', linewidth=2, label='Zero Error')
-            plt.title('Error Distribution')
-            plt.xlabel('Error (Predicted - Reference)')
-            plt.ylabel('Frequency')
-            plt.grid(alpha=0.3)
-            plt.legend()
+        # 2. Error histogram
+        errors = predictions - true_values
+        plt.figure(figsize=(10, 8))
+        plt.hist(errors, bins=30, alpha=0.7, edgecolor='black')
+        plt.axvline(x=0, color='r', linestyle='--')
+        plt.xlabel('Prediction Error')
+        plt.ylabel('Frequency')
+        plt.title(f'Error Distribution\nMean Error = {metrics["mean_error"]:.4f}, Std Dev = {metrics["std_error"]:.4f}')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(plots_dir, 'error_histogram.png'), dpi=200)
+        plt.close()
 
-            # Save error histogram
-            error_hist_path = os.path.join(output_dir, 'error_histogram.png')
-            plt.savefig(error_hist_path, dpi=150, bbox_inches='tight')
-            plt.close()
-            print(f"Error histogram saved to: {error_hist_path}")
+        # 3. Error vs true value
+        plt.figure(figsize=(10, 8))
+        plt.scatter(true_values, errors, alpha=0.6)
+        plt.axhline(y=0, color='r', linestyle='--')
+        plt.xlabel('True Values')
+        plt.ylabel('Prediction Error')
+        plt.title('Error vs True Values')
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(plots_dir, 'error_vs_true.png'), dpi=200)
+        plt.close()
 
-            # Generate scatter compute of predicted vs reference values
-            if len(errors) > 1:
-                # Collect pairs of reference and prediction values
-                pred_ref_pairs = []
-                for result in results:
-                    if result['status'] == 'success' and result['path'] in image_id_map:
-                        id_val = image_id_map[result['path']]
-                        pred_ref_pairs.append((reference_values[id_val], result['prediction']))
+        # 4. Bland-Altman plot (agreement analysis)
+        mean_values = (true_values + predictions) / 2
+        plt.figure(figsize=(10, 8))
+        plt.scatter(mean_values, errors, alpha=0.6)
+        plt.axhline(y=metrics["mean_error"], color='r', linestyle='-', label=f'Mean error: {metrics["mean_error"]:.4f}')
+        plt.axhline(y=metrics["mean_error"] + 1.96 * metrics["std_error"], color='g', linestyle='--',
+                    label=f'+1.96 SD: {metrics["mean_error"] + 1.96 * metrics["std_error"]:.4f}')
+        plt.axhline(y=metrics["mean_error"] - 1.96 * metrics["std_error"], color='g', linestyle='--',
+                    label=f'-1.96 SD: {metrics["mean_error"] - 1.96 * metrics["std_error"]:.4f}')
+        plt.xlabel('Mean of True and Predicted Values')
+        plt.ylabel('Prediction Error')
+        plt.title('Bland-Altman Plot')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(plots_dir, 'bland_altman.png'), dpi=200)
+        plt.close()
 
-                if pred_ref_pairs:
-                    ref_vals, pred_vals = zip(*pred_ref_pairs)
+        # 5. Summary metrics table as an image
+        plt.figure(figsize=(10, 6))
+        plt.axis('off')
 
-                    plt.figure(figsize=(8, 8))
-                    plt.scatter(ref_vals, pred_vals, alpha=0.7)
+        # Create text for the table
+        table_text = "Evaluation Metrics Summary\n\n"
+        table_text += f"MSE: {metrics['mse']:.4f}\n"
+        table_text += f"RMSE: {metrics['rmse']:.4f}\n"
+        table_text += f"MAE: {metrics['mae']:.4f}\n"
+        table_text += f"R²: {metrics['r2']:.4f}\n"
+        table_text += f"Mean Error: {metrics['mean_error']:.4f}\n"
+        table_text += f"Std Error: {metrics['std_error']:.4f}\n"
+        table_text += f"Max Abs Error: {metrics['max_error']:.4f}\n"
+        table_text += f"Min Abs Error: {metrics['min_error']:.4f}\n\n"
 
-                    # Add identity line
-                    min_val = min(min(ref_vals), min(pred_vals))
-                    max_val = max(max(ref_vals), max(pred_vals))
-                    plt.plot([min_val, max_val], [min_val, max_val], 'k--', alpha=0.7, label='Identity Line')
+        table_text += "Error Percentiles:\n"
+        for percentile, value in metrics['error_percentiles'].items():
+            table_text += f"  {percentile}: {value:.4f}\n"
 
-                    # Add linear fit
-                    if len(pred_ref_pairs) > 1:
-                        z = np.polyfit(ref_vals, pred_vals, 1)
-                        p = np.poly1d(z)
-                        plt.plot(np.array([min_val, max_val]), p(np.array([min_val, max_val])),
-                                 'r-', label=f'Fit: y={z[0]:.3f}x+{z[1]:.3f}')
+        table_text += "\nSamples within Error Ranges:\n"
+        for range_name, percentage in metrics['error_ranges'].items():
+            table_text += f"  {range_name}: {percentage:.2f}%\n"
 
-                    plt.title('Predicted vs Reference Values')
-                    plt.xlabel('Reference Values')
-                    plt.ylabel('Predicted Values')
-                    plt.legend()
-                    plt.grid(alpha=0.3)
+        plt.text(0.1, 0.5, table_text, fontsize=12, va='center')
+        plt.tight_layout()
+        plt.savefig(os.path.join(plots_dir, 'metrics_summary.png'), dpi=200)
+        plt.close()
 
-                    # Save scatter compute
-                    scatter_path = os.path.join(output_dir, 'pred_vs_ref_scatter.png')
-                    plt.savefig(scatter_path, dpi=150, bbox_inches='tight')
-                    plt.close()
-                    print(f"Pred vs Ref scatter plot saved to: {scatter_path}")
+        print(f"Evaluation plots saved to: {plots_dir}")
 
-    elapsed_time = time.time() - start_time
-    print(f"Total processing time: {elapsed_time:.2f} seconds")
-    print(f"All results saved to: {output_dir}")
+
+    def visualize_prediction(self, image, true_value, prediction, save_path):
+        """Visualize image with prediction and true value"""
+        # Create a figure
+        plt.figure(figsize=(10, 8))
+
+        # Display the image
+        plt.imshow(image)
+
+        # Add text with prediction information
+        error = prediction - true_value
+        error_text = f"Error: {error:.2f} ({'underestimated' if error < 0 else 'overestimated'})"
+
+        plt.title(f"True: {true_value:.2f} | Predicted: {prediction:.2f}\n{error_text}", fontsize=14)
+        plt.axis('off')
+
+        # Save the figure
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=200, bbox_inches='tight')
+        plt.close()
+
+def parse_args():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description='Texture Regression Model Inference')
+
+    # Model parameters
+    parser.add_argument('--model_path', type=str, required=True,
+                        help='Path to model weights file')
+    parser.add_argument('--backbone', type=str, default='densenet121',
+                        choices=['densenet121', 'densenet169', 'resnet18', 'resnet34', 'resnet50', 'mobilenet_v2'],
+                        help='Backbone network selection (default: densenet121)')
+    parser.add_argument('--border_width', type=int, default=70,  # 修改为与训练一致
+                        help='Inner black border width (default: 70)')
+
+    # Inference mode
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--evaluate_dataset', type=str,
+                       help='Path to dataset directory for evaluation')
+    group.add_argument('--predict_image', type=str,
+                       help='Path to single image for prediction')
+    group.add_argument('--predict_directory', type=str,
+                       help='Path to directory containing multiple images for prediction')
+
+    # Other parameters
+    parser.add_argument('--labels_file', type=str, default=None,
+                        help='Path to labels file (if different from default)')
+    parser.add_argument('--batch_size', type=int, default=32,  # 修改为与训练一致
+                        help='Batch size (default: 32)')
+    parser.add_argument('--num_workers', type=int, default=4,
+                        help='Number of data loading workers (default: 4)')
+    parser.add_argument('--output_dir', type=str, default='inference_results',
+                        help='Output directory (default: inference_results)')
+    parser.add_argument('--no_cuda', action='store_true',
+                        help='Do not use CUDA even if available')
+
+    return parser.parse_args()
 
 def main():
     """Main function"""
-    parser = argparse.ArgumentParser(description='Batch Image Texture Analysis Tool')
-    parser.add_argument('--model_path', required=True, help='Path to pretrained model')
-    parser.add_argument('--image_dir', required=True, help='Path to image directory')
-    parser.add_argument('--output_dir', help='Path to output directory')
-    parser.add_argument('--device', default='cuda', help='Compute device (cuda/cpu)')
-    parser.add_argument('--workers', type=int, default=4, help='Number of processing threads')
-    parser.add_argument('--csv_path', help='Path to CSV with reference values (optional)')
-    parser.add_argument('--border_width', type=int, default=70, help='Width of inner black border (default: 70)')
+    # Parse command line arguments
+    args = parse_args()
 
-    args = parser.parse_args()
+    # Set device
+    device = 'cpu' if args.no_cuda else 'cuda'
 
-    # Check if model file exists
-    if not os.path.exists(args.model_path):
-        print(f"Error: Model file does not exist: {args.model_path}")
-        sys.exit(1)
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
 
-    # Check if image directory exists
-    if not os.path.exists(args.image_dir):
-        print(f"Error: Image directory does not exist: {args.image_dir}")
-        sys.exit(1)
+    # 打印系统信息
+    print("=" * 50)
+    print("System Information:")
+    print(f"PyTorch version: {torch.__version__}")
+    print(f"CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"CUDA device: {torch.cuda.get_device_name(0)}")
+    print(f"Using device: {device}")
+    print("=" * 50)
 
-    # Check if CSV file exists if provided
-    if args.csv_path and not os.path.exists(args.csv_path):
-        print(f"Warning: CSV file does not exist: {args.csv_path}")
-        args.csv_path = None
-
-    # Process image folder
-    process_image_folder(
+    # Initialize model inferencer
+    inferencer = ModelInference(
         model_path=args.model_path,
-        image_dir=args.image_dir,
-        output_dir=args.output_dir,
-        device=args.device,
-        n_workers=args.workers,
-        csv_path=args.csv_path,
-        border_width=args.border_width
+        backbone=args.backbone,
+        device=device,
+        border_width=args.border_width,
+        output_dir=args.output_dir  # 添加这个参数
     )
+
+    # Execute the appropriate inference task based on command line arguments
+    if args.evaluate_dataset:
+        print(f"Evaluating dataset: {args.evaluate_dataset}")
+        results_df, metrics = inferencer.evaluate_dataset(
+            data_dir=args.evaluate_dataset,
+            labels_file=args.labels_file,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers
+        )
+
+        # Save results
+        results_df.to_csv(os.path.join(args.output_dir, 'evaluation_results.csv'), index=False)
+
+        # Print metrics
+        if metrics:
+            print("\nEvaluation Metrics:")
+            print(f"R²: {metrics['r2']:.4f}")
+            print(f"RMSE: {metrics['rmse']:.4f}")
+            print(f"MAE: {metrics['mae']:.4f}")
+            print(f"Mean Error: {metrics['mean_error']:.4f}")
+            print(f"Error Std Dev: {metrics['std_error']:.4f}")
+            print(f"Max Error: {metrics['max_error']:.4f}")
+
+            print("\nSample Proportion by Error Range:")
+            for range_name, percentage in metrics['error_ranges'].items():
+                print(f"  {range_name}: {percentage:.2f}%")
+
+        print(f"\nDetailed results saved to: {os.path.join(args.output_dir, 'evaluation_results')}")
+
+    elif args.predict_image:
+        print(f"Predicting single image: {args.predict_image}")
+        prediction = inferencer.predict_single_image(args.predict_image)
+
+        print(f"Prediction result: {prediction:.4f}")
+
+        # Save result
+        with open(os.path.join(args.output_dir, 'single_prediction.txt'), 'w') as f:
+            f.write(f"Image: {args.predict_image}\n")
+            f.write(f"Predicted value: {prediction:.4f}\n")
+
+    elif args.predict_directory:
+        print(f"Predicting images in directory: {args.predict_directory}")
+
+        # Get all image files in the directory
+        image_extensions = ['.jpg', '.jpeg', '.png', '.bmp']
+        image_files = []
+        for ext in image_extensions:
+            image_files.extend(glob.glob(os.path.join(args.predict_directory, f'*{ext}')))
+
+        print(f"Found {len(image_files)} image files")
+
+        # Predict all images
+        predictions = inferencer.predict_multiple_images(image_files)
+
+        # Create results dataframe
+        results_df = pd.DataFrame(predictions)
+
+        # Save results
+        results_df.to_csv(os.path.join(args.output_dir, 'batch_predictions.csv'), index=False)
+
+        print(f"Prediction results saved to: {os.path.join(args.output_dir, 'batch_predictions.csv')}")
 
 if __name__ == "__main__":
     main()

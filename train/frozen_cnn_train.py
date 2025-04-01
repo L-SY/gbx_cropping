@@ -1197,9 +1197,9 @@ def parse_args():
                         help='测试集比例 (默认: 0.15)')
 
     # 数据增强参数
-    parser.add_argument('--train_aug_factor', type=int, default=15,
+    parser.add_argument('--train_aug_factor', type=int, default=5,
                         help='训练集增强因子 (默认: 15)')
-    parser.add_argument('--val_aug_factor', type=int, default=15,
+    parser.add_argument('--val_aug_factor', type=int, default=5,
                         help='验证集增强因子 (默认: 15)')
     parser.add_argument('--test_aug_factor', type=int, default=5,
                         help='测试集增强因子 (默认: 5)')
@@ -1305,20 +1305,20 @@ def main():
     if not args.no_augment:
         # 增强训练集
         print("Augmenting training set...")
-        train_augmenter = DatasetAugmenter(augmentation_factor=args.train_aug_factor, is_training=True)
+        train_augmenter = DatasetAugmenter(augmentation_factor=args.train_aug_factor, is_training=False)
         train_augmenter.augment_dataset(
             os.path.join(split_dataset_path, 'train'),
             os.path.join(augmented_dataset_path, 'train'),
-            is_training=True
+            is_training=False
         )
 
         # 增强验证集
         print("Augmenting validation set...")
-        val_augmenter = DatasetAugmenter(augmentation_factor=args.val_aug_factor, is_training=True)
+        val_augmenter = DatasetAugmenter(augmentation_factor=args.val_aug_factor, is_training=False)
         val_augmenter.augment_dataset(
             os.path.join(split_dataset_path, 'val'),
             os.path.join(augmented_dataset_path, 'val'),
-            is_training=True
+            is_training=False
         )
 
         # 增强测试集
