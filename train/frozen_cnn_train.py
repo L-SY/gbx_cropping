@@ -1027,7 +1027,7 @@ class Trainer:
         r2 = self.calculate_r2(predictions, true_values)
         rmse = np.sqrt(np.mean((predictions - true_values) ** 2))
 
-        # Plot scatter plot
+        # Plot scatter compute
         plt.scatter(true_values, predictions, alpha=0.6, s=40)
 
         # Add perfect prediction line

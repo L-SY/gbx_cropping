@@ -553,13 +553,13 @@ class ModelEvaluator:
 
         print("\nGenerating visualization charts...")
 
-        # 1. True vs Predicted scatter plot
+        # 1. True vs Predicted scatter compute
         self._plot_true_vs_predicted()
 
         # 2. Error distribution histogram
         self._plot_error_distribution()
 
-        # 3. Bland-Altman plot (difference plot)
+        # 3. Bland-Altman compute (difference compute)
         self._plot_bland_altman()
 
         # 4. Error boxplot
@@ -568,7 +568,7 @@ class ModelEvaluator:
         # 5. Comprehensive analysis
         self._plot_comprehensive_analysis()
 
-        # 6. Error vs True plot
+        # 6. Error vs True compute
         self._plot_error_vs_true()
 
         print(f"All visualization charts have been saved to: {self.output_dir}")
@@ -608,10 +608,10 @@ class ModelEvaluator:
             print(f"Top 10 largest errors saved to: {top_errors_file}")
 
     def _plot_true_vs_predicted(self):
-        """Plot true vs predicted values scatter plot"""
+        """Plot true vs predicted values scatter compute"""
         plt.figure(figsize=(10, 8))
 
-        # Scatter plot
+        # Scatter compute
         plt.scatter(self.true_values, self.predictions, alpha=0.6, s=30)
 
         # Ideal line (diagonal)
@@ -691,7 +691,7 @@ class ModelEvaluator:
         plt.close()
 
     def _plot_bland_altman(self):
-        """Plot Bland-Altman plot (difference plot)"""
+        """Plot Bland-Altman compute (difference compute)"""
         plt.figure(figsize=(10, 8))
 
         # Calculate means and differences
@@ -702,7 +702,7 @@ class ModelEvaluator:
         md = np.mean(diff)
         sd = np.std(diff)
 
-        # Draw scatter plot
+        # Draw scatter compute
         plt.scatter(mean, diff, alpha=0.6, s=30)
 
         # Add mean line and 1.96 standard deviation interval
@@ -779,7 +779,7 @@ class ModelEvaluator:
         """Plot comprehensive analysis chart"""
         plt.figure(figsize=(16, 12))
 
-        # 1. True vs Predicted scatter plot
+        # 1. True vs Predicted scatter compute
         plt.subplot(2, 2, 1)
         plt.scatter(self.true_values, self.predictions, alpha=0.6, s=30)
         min_val = min(np.min(self.true_values), np.min(self.predictions))
@@ -803,7 +803,7 @@ class ModelEvaluator:
         plt.ylabel('Frequency')
         plt.grid(True, alpha=0.3)
 
-        # 3. Bland-Altman plot
+        # 3. Bland-Altman compute
         plt.subplot(2, 2, 3)
         mean = (self.predictions + self.true_values) / 2
         diff = self.predictions - self.true_values
@@ -818,7 +818,7 @@ class ModelEvaluator:
         plt.ylabel('Difference (Predicted - True)')
         plt.grid(True, alpha=0.3)
 
-        # 4. Relative error vs true value plot
+        # 4. Relative error vs true value compute
         plt.subplot(2, 2, 4)
         rel_errors = np.abs((self.predictions - self.true_values) / self.true_values) * 100
         plt.scatter(self.true_values, rel_errors, alpha=0.6, s=30)
@@ -843,7 +843,7 @@ class ModelEvaluator:
         # Calculate errors
         errors = self.predictions - self.true_values
 
-        # Draw scatter plot
+        # Draw scatter compute
         plt.scatter(self.true_values, errors, alpha=0.6, s=30)
 
         # Add zero error line

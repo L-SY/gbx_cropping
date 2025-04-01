@@ -638,7 +638,7 @@ def process_image_folder(model_path, image_dir, output_dir=None, device='cuda', 
             plt.close()
             print(f"Error histogram saved to: {error_hist_path}")
 
-            # Generate scatter plot of predicted vs reference values
+            # Generate scatter compute of predicted vs reference values
             if len(errors) > 1:
                 # Collect pairs of reference and prediction values
                 pred_ref_pairs = []
@@ -671,7 +671,7 @@ def process_image_folder(model_path, image_dir, output_dir=None, device='cuda', 
                     plt.legend()
                     plt.grid(alpha=0.3)
 
-                    # Save scatter plot
+                    # Save scatter compute
                     scatter_path = os.path.join(output_dir, 'pred_vs_ref_scatter.png')
                     plt.savefig(scatter_path, dpi=150, bbox_inches='tight')
                     plt.close()
