@@ -1,183 +1,42 @@
-# 导入所需的库
+# inference.py
+"""
+图像纹理回归推理脚本
+
+使用方法:
+    单张图像推理:
+        python inference.py --model_path /path/to/model.pth --image_path /path/to/image.jpg
+
+    目录批量推理:
+        python inference.py --model_path /path/to/model.pth --predict_directory /path/to/images_folder
+
+    评估数据集:
+        python inference.py --model_path /path/to/model.pth --evaluate_dataset /path/to/dataset_folder
+
+日期: 2025-04-02
+"""
+
 import os
-import json
+import argparse
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms, models
-from PIL import Image, ImageDraw
+from torch.utils.data import DataLoader
+from PIL import Image
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-import argparse
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import glob
-from pathlib import Path
 
-# 设置随机种子以确保结果可复现
-torch.manual_seed(42)
-np.random.seed(42)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed(42)
-
-# 定义内部黑色边框添加类（与训练代码保持一致）
-class InnerBlackBorderAdder(object):
-    """Add black border inside the image"""
-    def __init__(self, border_width=15):
-        self.border_width = border_width
-
-    def __call__(self, img):
-        width, height = img.size
-        bordered_img = img.copy()
-        draw = ImageDraw.Draw(bordered_img)
-
-        draw.rectangle([(0, 0), (width, self.border_width)], fill="black")
-        draw.rectangle([(0, height - self.border_width), (width, height)], fill="black")
-        draw.rectangle([(0, 0), (self.border_width, height)], fill="black")
-        draw.rectangle([(width - self.border_width, 0), (width, height)], fill="black")
-
-        return bordered_img
-
-# 定义回归数据集类
-class RegressionDataset(Dataset):
-    """Custom dataset class"""
-    def __init__(self, data_dir, labels_file=None, transform=None):
-        self.data_dir = data_dir
-        self.transform = transform
-
-        # If a labels file is provided, read it
-        if labels_file:
-            if os.path.exists(labels_file):
-                self.labels_df = pd.read_csv(labels_file)
-            else:
-                raise ValueError(f"Labels file not found: {labels_file}")
-        else:
-            # Try to find the subset name and read the corresponding labels file
-            subset_name = os.path.basename(data_dir)  # 'train', 'val', or 'test'
-            labels_file = os.path.join(data_dir, f'{subset_name}_labels.csv')
-
-            if os.path.exists(labels_file):
-                self.labels_df = pd.read_csv(labels_file)
-            else:
-                # If no labels file, assume we only need predictions
-                self.labels_df = None
-                # Get all image files in the directory
-                image_extensions = ['.jpg', '.jpeg', '.png', '.bmp']
-                image_files = []
-                for ext in image_extensions:
-                    image_files.extend(glob.glob(os.path.join(data_dir, f'*{ext}')))
-
-                # Create a dataframe without labels
-                self.labels_df = pd.DataFrame({
-                    'image_name': [os.path.basename(f) for f in image_files],
-                    'label': [float('nan')] * len(image_files)
-                })
-
-    def __len__(self):
-        return len(self.labels_df)
-
-    def __getitem__(self, idx):
-        # Get image path and label
-        row = self.labels_df.iloc[idx]
-        img_path = os.path.join(self.data_dir, row['image_name'])
-
-        # Read image
-        try:
-            image = Image.open(img_path).convert('RGB')
-        except Exception as e:
-            print(f"Cannot read image {img_path}: {e}")
-            # Return a blank image as fallback
-            image = Image.new('RGB', (224, 224), color='gray')
-
-        # Apply transformations
-        if self.transform:
-            image = self.transform(image)
-
-        # If there's a label, return image and label; otherwise just return image
-        if not pd.isna(row['label']):
-            return image, torch.tensor(row['label'], dtype=torch.float32)
-        else:
-            return image, torch.tensor(float('nan'), dtype=torch.float32)
-
-# 定义冻结CNN回归模型（与训练代码保持一致）
-class FrozenCNNRegressor(nn.Module):
-    """Texture regression model using frozen CNN feature extractor and trainable FC layers"""
-    def __init__(self, backbone='densenet121', pretrained=True, initial_value=15.0, dropout_rate=0.5):
-        super(FrozenCNNRegressor, self).__init__()
-
-        # Load pretrained backbone network
-        if backbone == 'densenet121':
-            base_model = models.densenet121(weights='DEFAULT' if pretrained else None)
-            self.features = base_model.features
-            feature_dim = base_model.classifier.in_features  # 1024
-        elif backbone == 'densenet169':
-            base_model = models.densenet169(weights='DEFAULT' if pretrained else None)
-            self.features = base_model.features
-            feature_dim = base_model.classifier.in_features  # 1664
-        elif backbone == 'resnet18':
-            base_model = models.resnet18(weights='DEFAULT' if pretrained else None)
-            # Remove global average pooling and fully connected layers
-            self.features = nn.Sequential(*list(base_model.children())[:-2])
-            feature_dim = 512
-        elif backbone == 'resnet34':
-            base_model = models.resnet34(weights='DEFAULT' if pretrained else None)
-            self.features = nn.Sequential(*list(base_model.children())[:-2])
-            feature_dim = 512
-        elif backbone == 'resnet50':
-            base_model = models.resnet50(weights='DEFAULT' if pretrained else None)
-            self.features = nn.Sequential(*list(base_model.children())[:-2])
-            feature_dim = 2048
-        elif backbone == 'mobilenet_v2':
-            base_model = models.mobilenet_v2(weights='DEFAULT' if pretrained else None)
-            self.features = base_model.features
-            feature_dim = 1280
-        else:
-            raise ValueError(f"Unsupported backbone: {backbone}")
-
-        # Global average pooling layer
-        self.global_pool = nn.AdaptiveAvgPool2d(1)
-
-        # Regression head
-        self.regressor = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(feature_dim, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(256, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate * 0.8),
-            nn.Linear(128, 64),
-            nn.BatchNorm1d(64),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate * 0.6),
-            nn.Linear(64, 1)
-        )
-
-        # Initialize the bias of the final layer to the specified value
-        final_layer = self.regressor[-1]
-        nn.init.constant_(final_layer.bias, initial_value)
-
-    def forward(self, x):
-        # Extract features
-        features = self.features(x)
-
-        # Global average pooling
-        pooled = self.global_pool(features)
-
-        # Regression prediction
-        output = self.regressor(pooled).squeeze()
-
-        return output
+from models import FrozenCNNRegressor
+from transforms import InnerBlackBorderAdder, get_inference_transform
+from datasets import RegressionDataset
 
 class ModelInference:
-    """Model inference class"""
+    """模型推理类"""
     def __init__(self, model_path, backbone='densenet121', device='cuda', border_width=70, output_dir='inference_results'):
         # 设置设备
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
-        print(f"Using device: {self.device}")
+        print(f"使用设备: {self.device}")
 
         # 保存输出目录
         self.output_dir = output_dir
@@ -187,79 +46,72 @@ class ModelInference:
         self.model = self.load_model(model_path, backbone)
 
         # 设置转换 - 确保与训练时完全一致
-        self.transform = transforms.Compose([
-            InnerBlackBorderAdder(border_width=border_width),
-            transforms.Resize((224, 224)),  # 与训练保持一致
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                 std=[0.229, 0.224, 0.225])
-        ])
+        self.transform = get_inference_transform(border_width)
 
-        print("Preprocessing pipeline initialized with:")
-        print(f"  - Border width: {border_width}")
-        print(f"  - Image size: 224x224")
+        print("初始化预处理管道，设置:")
+        print(f"  - 边框宽度: {border_width}")
+        print(f"  - 图像大小: 224x224")
 
     def load_model(self, model_path, backbone):
-        """Load model"""
+        """加载模型"""
         try:
-            print(f"Loading model from {model_path}")
+            print(f"从 {model_path} 加载模型")
             checkpoint = torch.load(model_path, map_location=self.device)
 
             # 创建模型实例
             model = FrozenCNNRegressor(
                 backbone=backbone,
                 pretrained=False,
-                initial_value=15.0,  # 使用训练时的初始值
-                dropout_rate=0.5     # 使用训练时的dropout率
+                initial_value=15.0,
+                dropout_rate=0.5
             )
 
             # 加载模型权重
             if 'model_state_dict' in checkpoint:
                 model.load_state_dict(checkpoint['model_state_dict'])
-                print("Loaded model state dict")
+                print("已加载模型权重")
             else:
                 model.load_state_dict(checkpoint)
-                print("Loaded entire model")
+                print("已加载整个模型")
 
             model.to(self.device)
             model.eval()  # 确保模型处于评估模式
-            print(f"Model successfully loaded and set to evaluation mode")
+            print(f"模型加载成功并设置为评估模式")
             return model
         except Exception as e:
-            raise Exception(f"Error loading model: {e}")
+            raise Exception(f"加载模型时出错: {e}")
 
     def predict_single_image(self, image_path):
-        """Predict a single image"""
+        """预测单张图像"""
         try:
             # 加载图像
             image = Image.open(image_path).convert('RGB')
-            print(f"Original image size: {image.size}")
+            original_size = image.size
+            print(f"原始图像尺寸: {original_size}")
 
             # 预处理图像
             input_tensor = self.transform(image)
-            print(f"Transformed tensor shape: {input_tensor.shape}")
+            print(f"转换后的张量形状: {input_tensor.shape}")
 
+            # 添加批次维度并移至指定设备
             input_tensor = input_tensor.unsqueeze(0).to(self.device)
 
             # 执行推理
-            self.model.eval()  # 确保模型处于评估模式
             with torch.no_grad():
                 prediction = self.model(input_tensor).item()
 
-            print(f"Raw prediction: {prediction}")
+            print(f"原始预测值: {prediction}")
             return prediction
         except Exception as e:
-            print(f"Error predicting image {image_path}: {e}")
+            print(f"预测图像 {image_path} 时出错: {e}")
             import traceback
             traceback.print_exc()
             return None
 
     def predict_multiple_images(self, image_paths):
-        """Predict multiple images"""
+        """预测多张图像"""
         predictions = []
-        self.model.eval()  # 确保模型处于评估模式
-
-        for path in tqdm(image_paths, desc="Predicting multiple images"):
+        for path in tqdm(image_paths, desc="预测多张图像"):
             pred = self.predict_single_image(path)
             predictions.append({
                 'image_path': path,
@@ -269,9 +121,9 @@ class ModelInference:
         return predictions
 
     def evaluate_dataset(self, data_dir, labels_file=None, batch_size=32, num_workers=4):
-        """Evaluate entire dataset and identify samples with largest errors"""
-        # Create dataset and dataloader
-        dataset = RegressionDataset(data_dir, labels_file, transform=self.transform)
+        """评估整个数据集并识别误差最大的样本"""
+        # 创建数据集和数据加载器
+        dataset = RegressionDataset(data_dir, transform=self.transform)
         dataloader = DataLoader(
             dataset,
             batch_size=batch_size,
@@ -280,91 +132,91 @@ class ModelInference:
             pin_memory=True
         )
 
-        print(f"Evaluating dataset with {len(dataset)} images")
-        print(f"Using batch size: {batch_size}")
+        print(f"评估数据集，包含 {len(dataset)} 张图像")
+        print(f"批次大小: {batch_size}")
 
-        # Store predictions and true labels
+        # 存储预测结果和真实标签
         all_predictions = []
         all_true_values = []
         image_names = []
 
-        # Perform inference
+        # 执行推理
         self.model.eval()
         with torch.no_grad():
-            for i, (images, labels) in enumerate(tqdm(dataloader, desc="Evaluating dataset")):
+            for i, (images, labels) in enumerate(tqdm(dataloader, desc="评估数据集")):
                 images = images.to(self.device)
 
-                # Get image names for current batch
+                # 获取当前批次的图像名称
                 batch_indices = list(range(i * batch_size, min((i + 1) * batch_size, len(dataset))))
                 batch_image_names = [dataset.labels_df.iloc[idx]['image_name'] for idx in batch_indices]
 
-                # Predict
+                # 预测
                 outputs = self.model(images)
 
-                # Store results
+                # 存储结果
                 all_predictions.extend(outputs.cpu().numpy())
                 all_true_values.extend(labels.cpu().numpy())
                 image_names.extend(batch_image_names)
 
-        # Create results dataframe
+        # 创建结果数据帧
         results_df = pd.DataFrame({
             'image_name': image_names,
             'prediction': all_predictions,
             'true_value': all_true_values
         })
 
-        # Calculate metrics (if true labels exist)
+        # 计算指标(如果存在真实标签)
         metrics = {}
         has_labels = not np.isnan(all_true_values).all()
 
         if has_labels:
-            # Filter out NaN values
+            # 过滤掉NaN值
             valid_indices = ~np.isnan(all_true_values)
             valid_results_df = results_df[valid_indices].copy()
 
-            # Calculate absolute errors
+            # 计算绝对误差
             valid_results_df['abs_error'] = np.abs(valid_results_df['prediction'] - valid_results_df['true_value'])
             valid_results_df['error'] = valid_results_df['prediction'] - valid_results_df['true_value']
 
-            # Sort by absolute error (descending)
+            # 按绝对误差排序(降序)
             valid_results_df = valid_results_df.sort_values('abs_error', ascending=False)
 
-            # Extract top N samples with largest errors
-            top_n_errors = 5  # 您可以根据需要调整这个数字
+            # 提取误差最大的N个样本
+            top_n_errors = 5
             largest_errors_df = valid_results_df.head(top_n_errors)
 
-            print(f"\n===== Top {top_n_errors} Samples with Largest Errors =====")
+            print(f"\n===== 误差最大的 {top_n_errors} 个样本 =====")
             for idx, row in largest_errors_df.iterrows():
-                print(f"Image: {row['image_name']}")
-                print(f"  True Value: {row['true_value']:.2f}")
-                print(f"  Prediction: {row['prediction']:.2f}")
-                print(f"  Abs Error: {row['abs_error']:.2f}")
-                print(f"  Error: {row['error']:.2f} ({'underestimated' if row['error'] < 0 else 'overestimated'})")
+                print(f"图像: {row['image_name']}")
+                print(f"  真实值: {row['true_value']:.2f}")
+                print(f"  预测值: {row['prediction']:.2f}")
+                print(f"  绝对误差: {row['abs_error']:.2f}")
+                print(f"  误差: {row['error']:.2f} ({'低估' if row['error'] < 0 else '高估'})")
                 print("-" * 50)
 
-            # Save these images for further analysis
+            # 保存这些图像以供进一步分析
             error_analysis_dir = os.path.join(self.output_dir, 'error_analysis')
             os.makedirs(error_analysis_dir, exist_ok=True)
 
-            # Copy the images with largest errors to the analysis directory
+            # 复制误差最大的图像到分析目录
             for idx, row in largest_errors_df.iterrows():
                 img_path = os.path.join(data_dir, row['image_name'])
                 if os.path.exists(img_path):
-                    # Load and save the image with error information in the filename
+                    # 加载并保存图像，在文件名中包含误差信息
                     img = Image.open(img_path)
                     error_info = f"true_{row['true_value']:.2f}_pred_{row['prediction']:.2f}_err_{row['error']:.2f}"
                     save_path = os.path.join(error_analysis_dir, f"{os.path.splitext(row['image_name'])[0]}_{error_info}.png")
                     img.save(save_path)
 
-                    # Also save a visualization with the error information
+                    # 同时保存带有误差信息的可视化图像
                     self.visualize_prediction(img, row['true_value'], row['prediction'], save_path.replace('.png', '_viz.png'))
 
-            print(f"\nError analysis images saved to: {error_analysis_dir}")
+            print(f"\n误差分析图像已保存到: {error_analysis_dir}")
 
-            # Save detailed error analysis to CSV
+            # 将详细的误差分析保存为CSV
             largest_errors_df.to_csv(os.path.join(error_analysis_dir, 'largest_errors.csv'), index=False)
 
-            # Calculate standard metrics
+            # 计算标准指标
             valid_preds = valid_results_df['prediction'].values
             valid_true = valid_results_df['true_value'].values
 
@@ -377,7 +229,7 @@ class ModelInference:
             metrics['max_error'] = np.max(np.abs(valid_preds - valid_true))
             metrics['min_error'] = np.min(np.abs(valid_preds - valid_true))
 
-            # Calculate error distribution
+            # 计算误差分布
             errors = valid_preds - valid_true
             metrics['error_percentiles'] = {
                 '10%': np.percentile(np.abs(errors), 10),
@@ -389,7 +241,7 @@ class ModelInference:
                 '99%': np.percentile(np.abs(errors), 99)
             }
 
-            # Calculate proportion of samples within different error ranges
+            # 计算不同误差范围内的样本比例
             metrics['error_ranges'] = {
                 '<0.5': np.mean(np.abs(errors) < 0.5) * 100,
                 '<1.0': np.mean(np.abs(errors) < 1.0) * 100,
@@ -398,37 +250,37 @@ class ModelInference:
                 '>5.0': np.mean(np.abs(errors) >= 5.0) * 100
             }
 
-            # Visualize results
+            # 可视化结果
             self.visualize_evaluation_results(valid_true, valid_preds, metrics)
 
         return results_df, metrics
 
     def visualize_evaluation_results(self, true_values, predictions, metrics):
         """
-        Visualize evaluation results with scatter plots and error histograms
+        可视化评估结果，包括散点图和误差直方图
         """
-        # Create output directory for plots
+        # 创建输出目录
         plots_dir = os.path.join(self.output_dir, 'evaluation_plots')
         os.makedirs(plots_dir, exist_ok=True)
 
-        # 1. Scatter plot of predictions vs true values
+        # 1. 散点图：预测值vs真实值
         plt.figure(figsize=(10, 8))
         plt.scatter(true_values, predictions, alpha=0.6)
 
-        # Add perfect prediction line
+        # 添加完美预测线
         min_val = min(min(true_values), min(predictions))
         max_val = max(max(true_values), max(predictions))
         plt.plot([min_val, max_val], [min_val, max_val], 'r--')
 
-        plt.xlabel('True Values')
-        plt.ylabel('Predictions')
-        plt.title(f'Predictions vs True Values\nR² = {metrics["r2"]:.4f}, RMSE = {metrics["rmse"]:.4f}')
+        plt.xlabel('True Value')
+        plt.ylabel('Predicted Value')
+        plt.title(f'Predicted vs True Values\nR² = {metrics["r2"]:.4f}, RMSE = {metrics["rmse"]:.4f}')
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
         plt.savefig(os.path.join(plots_dir, 'scatter_plot.png'), dpi=200)
         plt.close()
 
-        # 2. Error histogram
+        # 2. 误差直方图
         errors = predictions - true_values
         plt.figure(figsize=(10, 8))
         plt.hist(errors, bins=30, alpha=0.7, edgecolor='black')
@@ -441,23 +293,23 @@ class ModelInference:
         plt.savefig(os.path.join(plots_dir, 'error_histogram.png'), dpi=200)
         plt.close()
 
-        # 3. Error vs true value
+        # 3. 误差vs真实值
         plt.figure(figsize=(10, 8))
         plt.scatter(true_values, errors, alpha=0.6)
         plt.axhline(y=0, color='r', linestyle='--')
-        plt.xlabel('True Values')
+        plt.xlabel('True Value')
         plt.ylabel('Prediction Error')
-        plt.title('Error vs True Values')
+        plt.title('Error vs True Value')
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
         plt.savefig(os.path.join(plots_dir, 'error_vs_true.png'), dpi=200)
         plt.close()
 
-        # 4. Bland-Altman plot (agreement analysis)
+        # 4. Bland-Altman图(一致性分析)
         mean_values = (true_values + predictions) / 2
         plt.figure(figsize=(10, 8))
         plt.scatter(mean_values, errors, alpha=0.6)
-        plt.axhline(y=metrics["mean_error"], color='r', linestyle='-', label=f'Mean error: {metrics["mean_error"]:.4f}')
+        plt.axhline(y=metrics["mean_error"], color='r', linestyle='-', label=f'Mean Error: {metrics["mean_error"]:.4f}')
         plt.axhline(y=metrics["mean_error"] + 1.96 * metrics["std_error"], color='g', linestyle='--',
                     label=f'+1.96 SD: {metrics["mean_error"] + 1.96 * metrics["std_error"]:.4f}')
         plt.axhline(y=metrics["mean_error"] - 1.96 * metrics["std_error"], color='g', linestyle='--',
@@ -471,26 +323,26 @@ class ModelInference:
         plt.savefig(os.path.join(plots_dir, 'bland_altman.png'), dpi=200)
         plt.close()
 
-        # 5. Summary metrics table as an image
+        # 5. 指标摘要表
         plt.figure(figsize=(10, 6))
         plt.axis('off')
 
-        # Create text for the table
+        # 创建表格文本
         table_text = "Evaluation Metrics Summary\n\n"
         table_text += f"MSE: {metrics['mse']:.4f}\n"
         table_text += f"RMSE: {metrics['rmse']:.4f}\n"
         table_text += f"MAE: {metrics['mae']:.4f}\n"
         table_text += f"R²: {metrics['r2']:.4f}\n"
         table_text += f"Mean Error: {metrics['mean_error']:.4f}\n"
-        table_text += f"Std Error: {metrics['std_error']:.4f}\n"
-        table_text += f"Max Abs Error: {metrics['max_error']:.4f}\n"
-        table_text += f"Min Abs Error: {metrics['min_error']:.4f}\n\n"
+        table_text += f"Error Std Dev: {metrics['std_error']:.4f}\n"
+        table_text += f"Max Absolute Error: {metrics['max_error']:.4f}\n"
+        table_text += f"Min Absolute Error: {metrics['min_error']:.4f}\n\n"
 
         table_text += "Error Percentiles:\n"
         for percentile, value in metrics['error_percentiles'].items():
             table_text += f"  {percentile}: {value:.4f}\n"
 
-        table_text += "\nSamples within Error Ranges:\n"
+        table_text += "\nSample Percentage within Error Ranges:\n"
         for range_name, percentage in metrics['error_ranges'].items():
             table_text += f"  {range_name}: {percentage:.2f}%\n"
 
@@ -499,98 +351,97 @@ class ModelInference:
         plt.savefig(os.path.join(plots_dir, 'metrics_summary.png'), dpi=200)
         plt.close()
 
-        print(f"Evaluation plots saved to: {plots_dir}")
-
+        print(f"评估图表已保存到: {plots_dir}")
 
     def visualize_prediction(self, image, true_value, prediction, save_path):
-        """Visualize image with prediction and true value"""
-        # Create a figure
+        """可视化带有预测和真实值的图像"""
+        # 创建图形
         plt.figure(figsize=(10, 8))
 
-        # Display the image
+        # 显示图像
         plt.imshow(image)
 
-        # Add text with prediction information
+        # 添加带有预测信息的文本
         error = prediction - true_value
-        error_text = f"Error: {error:.2f} ({'underestimated' if error < 0 else 'overestimated'})"
+        error_text = f"Error: {error:.2f} ({'Underestimated' if error < 0 else 'Overestimated'})"
 
-        plt.title(f"True: {true_value:.2f} | Predicted: {prediction:.2f}\n{error_text}", fontsize=14)
+        plt.title(f"True Value: {true_value:.2f} | Predicted Value: {prediction:.2f}\n{error_text}", fontsize=14)
         plt.axis('off')
 
-        # Save the figure
+        # 保存图形
         plt.tight_layout()
         plt.savefig(save_path, dpi=200, bbox_inches='tight')
         plt.close()
 
 def parse_args():
-    """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='Texture Regression Model Inference')
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(description='纹理回归模型推理')
 
-    # Model parameters
+    # 模型参数
     parser.add_argument('--model_path', type=str, required=True,
-                        help='Path to model weights file')
+                        help='模型权重文件路径')
     parser.add_argument('--backbone', type=str, default='densenet121',
                         choices=['densenet121', 'densenet169', 'resnet18', 'resnet34', 'resnet50', 'mobilenet_v2'],
-                        help='Backbone network selection (default: densenet121)')
-    parser.add_argument('--border_width', type=int, default=70,  # 修改为与训练一致
-                        help='Inner black border width (default: 70)')
+                        help='骨干网络选择 (默认: densenet121)')
+    parser.add_argument('--border_width', type=int, default=70,
+                        help='内部黑色边框宽度 (默认: 70)')
 
-    # Inference mode
+    # 推理模式
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--evaluate_dataset', type=str,
-                       help='Path to dataset directory for evaluation')
-    group.add_argument('--predict_image', type=str,
-                       help='Path to single image for prediction')
+                       help='用于评估的数据集目录路径')
+    group.add_argument('--image_path', type=str,
+                       help='用于预测的单张图像路径')
     group.add_argument('--predict_directory', type=str,
-                       help='Path to directory containing multiple images for prediction')
+                       help='包含多张图像的目录路径')
 
-    # Other parameters
+    # 其他参数
     parser.add_argument('--labels_file', type=str, default=None,
-                        help='Path to labels file (if different from default)')
-    parser.add_argument('--batch_size', type=int, default=32,  # 修改为与训练一致
-                        help='Batch size (default: 32)')
+                        help='标签文件路径 (如果与默认路径不同)')
+    parser.add_argument('--batch_size', type=int, default=32,
+                        help='批次大小 (默认: 32)')
     parser.add_argument('--num_workers', type=int, default=4,
-                        help='Number of data loading workers (default: 4)')
+                        help='数据加载线程数 (默认: 4)')
     parser.add_argument('--output_dir', type=str, default='inference_results',
-                        help='Output directory (default: inference_results)')
+                        help='输出目录 (默认: inference_results)')
     parser.add_argument('--no_cuda', action='store_true',
-                        help='Do not use CUDA even if available')
+                        help='即使可用也不使用CUDA')
 
     return parser.parse_args()
 
 def main():
-    """Main function"""
-    # Parse command line arguments
+    """主函数"""
+    # 解析命令行参数
     args = parse_args()
 
-    # Set device
+    # 设置设备
     device = 'cpu' if args.no_cuda else 'cuda'
 
-    # Create output directory
+    # 创建输出目录
     os.makedirs(args.output_dir, exist_ok=True)
 
     # 打印系统信息
     print("=" * 50)
-    print("System Information:")
-    print(f"PyTorch version: {torch.__version__}")
-    print(f"CUDA available: {torch.cuda.is_available()}")
+    print("系统信息:")
+    print(f"PyTorch版本: {torch.__version__}")
+    print(f"CUDA可用: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
-        print(f"CUDA device: {torch.cuda.get_device_name(0)}")
-    print(f"Using device: {device}")
+        print(f"CUDA设备: {torch.cuda.get_device_name(0)}")
+    print(f"使用设备: {device}")
     print("=" * 50)
 
-    # Initialize model inferencer
+    # 初始化模型推理器
     inferencer = ModelInference(
         model_path=args.model_path,
         backbone=args.backbone,
         device=device,
         border_width=args.border_width,
-        output_dir=args.output_dir  # 添加这个参数
+        output_dir=args.output_dir
     )
 
-    # Execute the appropriate inference task based on command line arguments
+    # 根据命令行参数执行适当的推理任务
     if args.evaluate_dataset:
-        print(f"Evaluating dataset: {args.evaluate_dataset}")
+        print(f"评估数据集: {args.evaluate_dataset}")
         results_df, metrics = inferencer.evaluate_dataset(
             data_dir=args.evaluate_dataset,
             labels_file=args.labels_file,
@@ -598,57 +449,57 @@ def main():
             num_workers=args.num_workers
         )
 
-        # Save results
+        # 保存结果
         results_df.to_csv(os.path.join(args.output_dir, 'evaluation_results.csv'), index=False)
 
-        # Print metrics
+        # 打印指标
         if metrics:
-            print("\nEvaluation Metrics:")
+            print("\n评估指标:")
             print(f"R²: {metrics['r2']:.4f}")
             print(f"RMSE: {metrics['rmse']:.4f}")
             print(f"MAE: {metrics['mae']:.4f}")
-            print(f"Mean Error: {metrics['mean_error']:.4f}")
-            print(f"Error Std Dev: {metrics['std_error']:.4f}")
-            print(f"Max Error: {metrics['max_error']:.4f}")
+            print(f"平均误差: {metrics['mean_error']:.4f}")
+            print(f"误差标准差: {metrics['std_error']:.4f}")
+            print(f"最大误差: {metrics['max_error']:.4f}")
 
-            print("\nSample Proportion by Error Range:")
+            print("\n不同误差范围内的样本比例:")
             for range_name, percentage in metrics['error_ranges'].items():
                 print(f"  {range_name}: {percentage:.2f}%")
 
-        print(f"\nDetailed results saved to: {os.path.join(args.output_dir, 'evaluation_results')}")
+        print(f"\n详细结果已保存到: {os.path.join(args.output_dir, 'evaluation_results')}")
 
-    elif args.predict_image:
-        print(f"Predicting single image: {args.predict_image}")
-        prediction = inferencer.predict_single_image(args.predict_image)
+    elif args.image_path:
+        print(f"预测单张图像: {args.image_path}")
+        prediction = inferencer.predict_single_image(args.image_path)
 
-        print(f"Prediction result: {prediction:.4f}")
+        print(f"预测结果: {prediction:.4f}")
 
-        # Save result
+        # 保存结果
         with open(os.path.join(args.output_dir, 'single_prediction.txt'), 'w') as f:
-            f.write(f"Image: {args.predict_image}\n")
-            f.write(f"Predicted value: {prediction:.4f}\n")
+            f.write(f"图像: {args.image_path}\n")
+            f.write(f"预测值: {prediction:.4f}\n")
 
     elif args.predict_directory:
-        print(f"Predicting images in directory: {args.predict_directory}")
+        print(f"预测目录中的图像: {args.predict_directory}")
 
-        # Get all image files in the directory
+        # 获取目录中的所有图像文件
         image_extensions = ['.jpg', '.jpeg', '.png', '.bmp']
         image_files = []
         for ext in image_extensions:
             image_files.extend(glob.glob(os.path.join(args.predict_directory, f'*{ext}')))
 
-        print(f"Found {len(image_files)} image files")
+        print(f"找到 {len(image_files)} 个图像文件")
 
-        # Predict all images
+        # 预测所有图像
         predictions = inferencer.predict_multiple_images(image_files)
 
-        # Create results dataframe
+        # 创建结果数据帧
         results_df = pd.DataFrame(predictions)
 
-        # Save results
+        # 保存结果
         results_df.to_csv(os.path.join(args.output_dir, 'batch_predictions.csv'), index=False)
 
-        print(f"Prediction results saved to: {os.path.join(args.output_dir, 'batch_predictions.csv')}")
+        print(f"预测结果已保存到: {os.path.join(args.output_dir, 'batch_predictions.csv')}")
 
 if __name__ == "__main__":
     main()
