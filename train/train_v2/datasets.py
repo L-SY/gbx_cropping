@@ -136,9 +136,16 @@ class DatasetSplitter:
         val_df = valid_df.iloc[val_indices].copy()
         test_df = valid_df.iloc[test_indices].copy()
 
-        print(f"分割数据集: {len(train_df)} 训练, {len(val_df)} 验证, {len(test_df)} 测试")
+        print(f"初始分割数据集: {len(train_df)} 训练, {len(val_df)} 验证, {len(test_df)} 测试")
 
         # 分析数据分布
+        self._analyze_distribution(train_df, val_df, test_df)
+
+        # 平衡验证集（只平衡验证集，不修改测试集）
+        train_df, val_df = self._balance_validation_set(train_df, val_df)
+
+        # 再次分析平衡后的数据分布
+        print("\n平衡后的数据分布:")
         self._analyze_distribution(train_df, val_df, test_df)
 
         # 保存子集
@@ -176,6 +183,92 @@ class DatasetSplitter:
         os.makedirs(os.path.join(self.target_dir, 'analysis'), exist_ok=True)
         plt.savefig(os.path.join(self.target_dir, 'analysis', 'label_distribution.png'), dpi=300, bbox_inches='tight')
         plt.close()
+
+    def _balance_validation_set(self, train_df, val_df, threshold=3, bin_width=0.05):
+        """
+        平衡验证集，确保验证集包含训练集中所有的标签区间
+
+        Args:
+            train_df: 训练集数据框
+            val_df: 验证集数据框
+            threshold: 在验证集中样本数低于此值的区间会被填充至此数量
+            bin_width: 标签区间宽度
+
+        Returns:
+            不变的训练集和平衡后的验证集
+        """
+        print("\n检查和平衡验证集数据分布...")
+
+        # 计算标签的最小值和最大值
+        min_label = min(train_df['label'].min(), val_df['label'].min())
+        max_label = max(train_df['label'].max(), val_df['label'].max())
+
+        # 创建区间范围
+        bins = np.arange(min_label, max_label + bin_width, bin_width)
+
+        # 为数据框添加区间列
+        def add_bin_column(df):
+            df = df.copy()
+            df['bin'] = pd.cut(df['label'], bins=bins)
+            return df
+
+        train_df_with_bins = add_bin_column(train_df)
+        val_df_with_bins = add_bin_column(val_df)
+
+        # 统计每个区间的样本数
+        train_counts = train_df_with_bins['bin'].value_counts().sort_index()
+        val_counts = val_df_with_bins['bin'].value_counts().sort_index()
+
+        # 打印分布情况
+        print("\n区间分布统计:")
+        print("区间 | 训练集 | 验证集")
+        print("-----|--------|--------")
+
+        for bin_range in sorted(set(train_counts.index) | set(val_counts.index)):
+            train_count = train_counts.get(bin_range, 0)
+            val_count = val_counts.get(bin_range, 0)
+            print(f"{bin_range} | {train_count} | {val_count}")
+
+        # 处理验证集中样本不足的区间
+        val_samples_to_add = []
+        for bin_range in train_counts.index:
+            train_count = train_counts.get(bin_range, 0)
+            val_count = val_counts.get(bin_range, 0)
+
+            # 如果训练集有这个区间但验证集样本数少于阈值
+            if train_count > 0 and val_count < threshold:
+                samples_needed = threshold - val_count
+                print(f"\n验证集区间 {bin_range} 样本不足，需要添加 {samples_needed} 个样本")
+
+                # 从训练集中选择该区间的样本
+                candidates = train_df_with_bins[train_df_with_bins['bin'] == bin_range]
+
+                if len(candidates) == 0:
+                    print(f"  警告: 训练集中未找到区间 {bin_range} 的样本!")
+                    continue
+
+                # 如果候选样本不足，则重复使用
+                if len(candidates) < samples_needed:
+                    print(f"  候选样本不足，将重复使用样本 ({len(candidates)} < {samples_needed})")
+                    # 创建足够数量的重复样本
+                    repeat_times = (samples_needed // len(candidates)) + 1
+                    candidates = pd.concat([candidates] * repeat_times)
+
+                # 随机选择所需数量的样本
+                samples_to_add = candidates.sample(n=samples_needed, replace=False)
+                samples_to_add = samples_to_add.drop(columns=['bin'])  # 移除bin列
+                val_samples_to_add.append(samples_to_add)
+                print(f"  从训练集添加了 {len(samples_to_add)} 个样本到验证集")
+
+        # 将新样本添加到验证集
+        if val_samples_to_add:
+            val_df_balanced = pd.concat([val_df] + val_samples_to_add, ignore_index=True)
+            print(f"\n验证集样本数: {len(val_df)} -> {len(val_df_balanced)} (添加了 {len(val_df_balanced) - len(val_df)} 个样本)")
+        else:
+            val_df_balanced = val_df
+            print("\n验证集无需添加样本")
+
+        return train_df, val_df_balanced
 
     def _save_subset(self, df, subset_name):
         """保存数据子集"""
@@ -216,6 +309,10 @@ class DatasetAugmenter:
         """增强数据集并保存"""
         os.makedirs(target_dir, exist_ok=True)
 
+        # 导入需要的库
+        from torchvision import transforms
+        from PIL import Image
+
         # 读取原始标签文件
         subset_name = os.path.basename(source_dir)  # 'train', 'val', 或 'test'
         labels_file = os.path.join(source_dir, f'{subset_name}_labels.csv')
@@ -229,6 +326,9 @@ class DatasetAugmenter:
 
         # 用于存储新的标签
         new_records = []
+
+        # Tensor转回PIL Image的函数
+        to_pil = transforms.ToPILImage()
 
         # 对每张图片进行处理
         for idx, row in tqdm(original_df.iterrows(), desc=f"增强 {subset_name} 数据集"):
@@ -244,20 +344,13 @@ class DatasetAugmenter:
                 print(f"打开图像 {img_path} 时出错: {e}")
                 continue
 
-            # 保存原始图片
-            original_name = f"orig_{row['image_name']}"
-            from torchvision import transforms
-            resized_image = transforms.Resize((224, 224))(image)  # 确保所有图像都调整为相同大小
-            resized_image.save(os.path.join(target_dir, original_name))
-            new_records.append({
-                'image_name': original_name,
-                'label': row['label']
-            })
-
-            # 为训练集生成增强图片
+            # 只生成增强图片
             if self.augmentation_factor > 0:
                 for aug_idx in range(self.augmentation_factor):
-                    aug_image = self.transform(image)
+                    # 应用转换，获取Tensor
+                    aug_tensor = self.transform(image)
+                    # 将Tensor转回PIL Image
+                    aug_image = to_pil(aug_tensor)
                     aug_name = f"aug{aug_idx}_{row['image_name']}"
                     aug_image.save(os.path.join(target_dir, aug_name))
                     new_records.append({
@@ -270,4 +363,4 @@ class DatasetAugmenter:
         new_df.to_csv(os.path.join(target_dir, f'{subset_name}_labels.csv'),
                       index=False)
 
-        print(f"增强 {subset_name} 数据集: {len(original_df)} 原始图像 -> {len(new_df)} 总图像")
+        print(f"增强 {subset_name} 数据集: {len(original_df)} 原始图像 -> {len(new_df)} 增强图像")

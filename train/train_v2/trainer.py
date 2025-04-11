@@ -23,8 +23,8 @@ class Trainer:
         os.makedirs(save_dir, exist_ok=True)
 
         # 定义混合损失函数
-        from losses import MixedRegressionLoss
-        self.criterion = MixedRegressionLoss(mse_weight=0.5, l1_weight=0.3, huber_weight=0.2)
+        from losses import MixedRegressionLoss, FocalRegressionLoss
+        self.criterion = FocalRegressionLoss()
 
         # 只获取requires_grad=True的参数进行优化
         # 这将只更新未冻结的参数，大大提高训练效率
@@ -56,7 +56,7 @@ class Trainer:
         }
 
         # 早停计数器
-        self.patience = 80  # 从25增加到30轮
+        self.patience = 40
         self.patience_counter = 0
         self.early_stop = False
 
@@ -349,20 +349,51 @@ class Trainer:
             f.write(html_table)
             f.write("</body></html>")
 
-    def train(self, num_epochs, eval_every=1, unfreeze_at_epoch=None):
-        """完整的训练过程"""
+    # 在trainer.py中添加或修改以下方法
+
+    def train(self, num_epochs, eval_every=1, unfreeze_schedule=None):
+        """完整的训练过程，支持多阶段解冻策略
+
+        参数:
+            num_epochs (int): 总训练轮次
+            eval_every (int): 每隔多少轮进行一次评估
+            unfreeze_schedule (list): 解冻计划，格式为[(epoch, num_layers, lr_factor), ...]
+                - epoch: 在哪个轮次开始解冻
+                - num_layers: 解冻多少层
+                - lr_factor: 学习率因子 (相对于初始学习率)
+        """
+        # 初始化解冻计划
+        if unfreeze_schedule is None:
+            unfreeze_schedule = []
+
         for epoch in range(num_epochs):
             if self.early_stop:
                 print("触发早停!")
                 break
 
-            # 在指定轮次解冻CNN层的一部分
-            if unfreeze_at_epoch and epoch == unfreeze_at_epoch:
-                print(f"轮次 {epoch+1}: 解冻CNN的最后几层进行微调")
-                self.model.unfreeze_last_layers(num_layers=2)
-                # 将学习率调整为原来的1/10，以避免破坏预训练特征
-                for param_group in self.optimizer.param_groups:
-                    param_group['lr'] = param_group['lr'] * 0.1
+            # 检查是否需要在当前轮次解冻层
+            for schedule_epoch, num_layers, lr_factor in unfreeze_schedule:
+                if epoch == schedule_epoch:
+                    print(f"轮次 {epoch+1}: 解冻{num_layers}层进行微调")
+                    if hasattr(self.model, 'unfreeze_layers'):
+                        self.model.unfreeze_layers(num_layers)
+                    elif hasattr(self.model, 'unfreeze_last_layers'):
+                        self.model.unfreeze_last_layers(num_layers)
+                    else:
+                        print("模型未实现解冻方法")
+
+                    # 调整学习率
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] = self.optimizer.defaults['lr'] * lr_factor
+                    print(f"学习率调整为原来的 {lr_factor} 倍")
+                    # 重新初始化优化器的学习率调度器
+                    self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                        self.optimizer,
+                        T_0=20,
+                        T_mult=2,
+                        eta_min=1e-6
+                    )
+                    break  # 一轮只执行一次解冻
 
             print(f"\n轮次 {epoch+1}/{num_epochs}")
             current_lr = self.optimizer.param_groups[0]['lr']

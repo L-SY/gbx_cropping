@@ -163,21 +163,24 @@ def main():
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
-        pin_memory=True
+        pin_memory=True,
+        drop_last=True
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
-        pin_memory=True
+        pin_memory=True,
+        drop_last=True
     )
     test_loader = DataLoader(
         test_dataset,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
-        pin_memory=True
+        pin_memory=True,
+        drop_last=True
     )
 
     # 创建冻结CNN+FC模型
@@ -212,7 +215,12 @@ def main():
     trainer.train(
         num_epochs=args.num_epochs,
         eval_every=args.eval_every,
-        unfreeze_at_epoch=args.unfreeze_epoch
+        # 如果需要解冻策略，使用正确的参数
+        unfreeze_schedule = [
+            (50, 2, 0.1),    # 在第80轮解冻最后2层
+            (80, 4, 0.05),  # 在第120轮解冻最后4层
+            (120, 8, 0.01)   # 在第160轮解冻最后8层
+        ]
     )
 
     # 评估模型

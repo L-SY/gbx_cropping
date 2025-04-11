@@ -153,6 +153,7 @@ def get_training_transform(border_width=70):
         InnerBlackBorderAdder(border_width=border_width),
         # 调整为目标大小
         transforms.Resize((224, 224)),
+        transforms.ToTensor()
     ])
 
 def get_validation_transform(border_width=70):
@@ -162,6 +163,7 @@ def get_validation_transform(border_width=70):
         FixedRotation(p=0.75),
         InnerBlackBorderAdder(border_width=border_width),
         transforms.Resize((224, 224)),
+        transforms.ToTensor(),
     ])
 
 def get_inference_transform(border_width=70):

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 class MixedRegressionLoss(nn.Module):
     """混合回归损失函数，加强对大误差的惩罚"""
-    def __init__(self, mse_weight=0.5, l1_weight=0.3, huber_weight=0.2, error_amplification=2.0):
+    def __init__(self, mse_weight=0.5, l1_weight=0.3, huber_weight=0.2, error_amplification=1.0):
         super(MixedRegressionLoss, self).__init__()
         self.mse = nn.MSELoss(reduction='none')  # 使用'none'以便自定义处理
         self.l1 = nn.L1Loss(reduction='none')

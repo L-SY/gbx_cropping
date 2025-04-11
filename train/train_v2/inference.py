@@ -28,8 +28,9 @@ from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import glob
 
 from models import FrozenCNNRegressor
-from transforms import InnerBlackBorderAdder, get_inference_transform
+from transforms import InnerBlackBorderAdder, get_inference_transform, get_validation_transform
 from datasets import RegressionDataset
+from torchvision import transforms
 
 class ModelInference:
     """模型推理类"""
@@ -45,8 +46,16 @@ class ModelInference:
         # 加载模型
         self.model = self.load_model(model_path, backbone)
 
+
+        transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                 std=[0.229, 0.224, 0.225])
+        ])
+
         # 设置转换 - 确保与训练时完全一致
-        self.transform = get_inference_transform(border_width)
+        self.transform = transform
 
         print("初始化预处理管道，设置:")
         print(f"  - 边框宽度: {border_width}")
@@ -61,7 +70,7 @@ class ModelInference:
             # 创建模型实例
             model = FrozenCNNRegressor(
                 backbone=backbone,
-                pretrained=False,
+                pretrained=True,
                 initial_value=15.0,
                 dropout_rate=0.5
             )
@@ -279,79 +288,6 @@ class ModelInference:
         plt.tight_layout()
         plt.savefig(os.path.join(plots_dir, 'scatter_plot.png'), dpi=200)
         plt.close()
-
-        # 2. 误差直方图
-        errors = predictions - true_values
-        plt.figure(figsize=(10, 8))
-        plt.hist(errors, bins=30, alpha=0.7, edgecolor='black')
-        plt.axvline(x=0, color='r', linestyle='--')
-        plt.xlabel('Prediction Error')
-        plt.ylabel('Frequency')
-        plt.title(f'Error Distribution\nMean Error = {metrics["mean_error"]:.4f}, Std Dev = {metrics["std_error"]:.4f}')
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(plots_dir, 'error_histogram.png'), dpi=200)
-        plt.close()
-
-        # 3. 误差vs真实值
-        plt.figure(figsize=(10, 8))
-        plt.scatter(true_values, errors, alpha=0.6)
-        plt.axhline(y=0, color='r', linestyle='--')
-        plt.xlabel('True Value')
-        plt.ylabel('Prediction Error')
-        plt.title('Error vs True Value')
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(plots_dir, 'error_vs_true.png'), dpi=200)
-        plt.close()
-
-        # 4. Bland-Altman图(一致性分析)
-        mean_values = (true_values + predictions) / 2
-        plt.figure(figsize=(10, 8))
-        plt.scatter(mean_values, errors, alpha=0.6)
-        plt.axhline(y=metrics["mean_error"], color='r', linestyle='-', label=f'Mean Error: {metrics["mean_error"]:.4f}')
-        plt.axhline(y=metrics["mean_error"] + 1.96 * metrics["std_error"], color='g', linestyle='--',
-                    label=f'+1.96 SD: {metrics["mean_error"] + 1.96 * metrics["std_error"]:.4f}')
-        plt.axhline(y=metrics["mean_error"] - 1.96 * metrics["std_error"], color='g', linestyle='--',
-                    label=f'-1.96 SD: {metrics["mean_error"] - 1.96 * metrics["std_error"]:.4f}')
-        plt.xlabel('Mean of True and Predicted Values')
-        plt.ylabel('Prediction Error')
-        plt.title('Bland-Altman Plot')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(plots_dir, 'bland_altman.png'), dpi=200)
-        plt.close()
-
-        # 5. 指标摘要表
-        plt.figure(figsize=(10, 6))
-        plt.axis('off')
-
-        # 创建表格文本
-        table_text = "Evaluation Metrics Summary\n\n"
-        table_text += f"MSE: {metrics['mse']:.4f}\n"
-        table_text += f"RMSE: {metrics['rmse']:.4f}\n"
-        table_text += f"MAE: {metrics['mae']:.4f}\n"
-        table_text += f"R²: {metrics['r2']:.4f}\n"
-        table_text += f"Mean Error: {metrics['mean_error']:.4f}\n"
-        table_text += f"Error Std Dev: {metrics['std_error']:.4f}\n"
-        table_text += f"Max Absolute Error: {metrics['max_error']:.4f}\n"
-        table_text += f"Min Absolute Error: {metrics['min_error']:.4f}\n\n"
-
-        table_text += "Error Percentiles:\n"
-        for percentile, value in metrics['error_percentiles'].items():
-            table_text += f"  {percentile}: {value:.4f}\n"
-
-        table_text += "\nSample Percentage within Error Ranges:\n"
-        for range_name, percentage in metrics['error_ranges'].items():
-            table_text += f"  {range_name}: {percentage:.2f}%\n"
-
-        plt.text(0.1, 0.5, table_text, fontsize=12, va='center')
-        plt.tight_layout()
-        plt.savefig(os.path.join(plots_dir, 'metrics_summary.png'), dpi=200)
-        plt.close()
-
-        print(f"评估图表已保存到: {plots_dir}")
 
     def visualize_prediction(self, image, true_value, prediction, save_path):
         """可视化带有预测和真实值的图像"""
