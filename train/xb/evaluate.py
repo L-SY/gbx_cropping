@@ -9,8 +9,8 @@ from sklearn.metrics import mean_squared_error, r2_score
 
 # 设置路径
 PROCESSED_DATA_DIR = '/home/siyang_liu/gbx_cropping_ws/train/whole/augmented_dataset'
-MODEL_SAVE_PATH = '/home/siyang_liu/gbx_cropping_ws/train/xb/whole_fifteen_epoch200/model.pth'
-OUTPUT_DIR = '/home/siyang_liu/gbx_cropping_ws/train/xb/whole_fifteen_epoch200'
+MODEL_SAVE_PATH = '/home/siyang_liu/gbx_cropping_ws/train/xb/whole_fifteen_epoch200/best_model.pth'
+OUTPUT_DIR = '/home/siyang_liu/gbx_cropping_ws/train/xb/whole_fifteen_epoch20_test'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
