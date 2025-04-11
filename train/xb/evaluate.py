@@ -4,16 +4,18 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 from torchvision import models, transforms
+import torch.nn as nn
 from PIL import Image
 from sklearn.metrics import mean_squared_error, r2_score
 
 # 设置路径
 PROCESSED_DATA_DIR = '/home/siyang_liu/gbx_cropping_ws/train/whole/augmented_dataset'
 MODEL_SAVE_PATH = '/home/siyang_liu/gbx_cropping_ws/train/xb/whole_fifteen_epoch200/best_model.pth'
-OUTPUT_DIR = '/home/siyang_liu/gbx_cropping_ws/train/xb/whole_fifteen_epoch20_test'
+OUTPUT_DIR = '/home/siyang_liu/gbx_cropping_ws/train/xb/whole_fifteen_epoch200'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+DROPOUT_RATE = 0.5  # 保持与训练代码相同的Dropout率
 
 # 数据集定义 (增加返回文件名)
 class MPPDataset(torch.utils.data.Dataset):
@@ -67,7 +69,9 @@ def evaluate_model():
     with torch.no_grad():
         for images, labels, files in test_loader:
             images = images.to(DEVICE)
-            outputs = model(images).squeeze().cpu().numpy()
+            outputs = model(images).reshape(-1).cpu().numpy()
+
+            # 保证输出是可迭代的
             if outputs.ndim == 0:
                 outputs = [outputs.item()]
             else:
@@ -77,38 +81,97 @@ def evaluate_model():
             true_labels.extend(labels.numpy().tolist())
             filenames.extend(files)  # 保存文件名
 
+    # 计算评估指标
     mse = mean_squared_error(true_labels, predictions)
     r2 = r2_score(true_labels, predictions)
+    mae = sum(abs(t - p) for t, p in zip(true_labels, predictions)) / len(true_labels)
 
-    print(f'MSE: {mse:.4f}')
-    print(f'R^2 Score: {r2:.4f}')
+    print(f'Mean Squared Error (MSE): {mse:.4f}')
+    print(f'R² Score: {r2:.4f}')
+    print(f'Mean Absolute Error (MAE): {mae:.4f}')
 
     # 绘制预测 vs 实际密度散点图
-    plt.figure(figsize=(8, 6))
+    plt.figure(figsize=(10, 8))
     plt.scatter(true_labels, predictions, alpha=0.7)
     plt.xlabel('Actual Density')
     plt.ylabel('Predicted Density')
     plt.title('Actual vs Predicted Density')
-    plt.plot([min(true_labels), max(true_labels)], [min(true_labels), max(true_labels)], 'r--')
+
+    # 添加对角线（理想预测线）
+    min_val = min(min(true_labels), min(predictions))
+    max_val = max(max(true_labels), max(predictions))
+    plt.plot([min_val, max_val], [min_val, max_val], 'r--', label='Ideal Prediction')
+
+    # 添加线性回归拟合线
+    from scipy import stats
+    slope, intercept, r_value, p_value, std_err = stats.linregress(true_labels, predictions)
+    plt.plot(true_labels, [slope*x + intercept for x in true_labels], 'g-',
+             label=f'Fit: y={slope:.4f}x+{intercept:.4f} (R²={r_value**2:.4f})')
+
     plt.grid(True)
-    plt.savefig(os.path.join(OUTPUT_DIR, 'density_prediction_plot2.png'))
-    print(f'Plot saved to {os.path.join(OUTPUT_DIR, "density_prediction_plot2.png")}')
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, 'density_prediction_scatter.png'), dpi=300)
+    print(f'Scatter plot saved to {os.path.join(OUTPUT_DIR, "density_prediction_scatter.png")}')
+
+    # 绘制预测误差直方图
+    errors = [p - t for p, t in zip(predictions, true_labels)]
+    plt.figure(figsize=(10, 6))
+    plt.hist(errors, bins=30, alpha=0.7, color='blue')
+    plt.axvline(x=0, color='r', linestyle='--')
+    plt.xlabel('Prediction Error (Predicted - Actual)')
+    plt.ylabel('Frequency')
+    plt.title('Prediction Error Distribution')
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(OUTPUT_DIR, 'error_distribution.png'), dpi=300)
+    print(f'Error distribution plot saved to {os.path.join(OUTPUT_DIR, "error_distribution.png")}')
 
     # 保存预测详情到CSV以便排查
     results_df = pd.DataFrame({
         'filename': filenames,
         'actual_density': true_labels,
         'predicted_density': predictions,
-        'abs_error': [abs(t - p) for t, p in zip(true_labels, predictions)]
+        'error': errors,
+        'abs_error': [abs(e) for e in errors]
     })
 
     results_df.to_csv(os.path.join(OUTPUT_DIR, 'prediction_details.csv'), index=False)
     print(f'Detailed predictions saved to {os.path.join(OUTPUT_DIR, "prediction_details.csv")}')
 
-    # 找到误差最大的前5个点便于查看
-    worst_predictions = results_df.sort_values('abs_error', ascending=False).head(5)
-    print("\nWorst predictions:")
-    print(worst_predictions)
+    # 找到误差最大的前10个点便于查看
+    worst_predictions = results_df.sort_values('abs_error', ascending=False).head(10)
+    print("\nWorst 10 predictions:")
+    print(worst_predictions[['filename', 'actual_density', 'predicted_density', 'abs_error']])
+
+    # 统计摘要
+    print("\nError summary statistics:")
+    error_stats = results_df['error'].describe()
+    print(error_stats)
+
+    # 将最差的预测结果可视化
+    try:
+        n_worst = 5  # 展示最差的5个预测
+        plt.figure(figsize=(15, 10))
+
+        for i, (_, row) in enumerate(worst_predictions.head(n_worst).iterrows()):
+            img_path = os.path.join(PROCESSED_DATA_DIR, 'test', row['filename'])
+            img = Image.open(img_path).convert('RGB')
+
+            plt.subplot(1, n_worst, i+1)
+            plt.imshow(img)
+            plt.title(f"Act: {row['actual_density']:.2f}\nPred: {row['predicted_density']:.2f}")
+            plt.axis('off')
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(OUTPUT_DIR, 'worst_predictions_images.png'), dpi=300)
+        print(f'Images of worst predictions saved to {os.path.join(OUTPUT_DIR, "worst_predictions_images.png")}')
+    except Exception as e:
+        print(f"Could not create worst predictions visualization: {e}")
 
 if __name__ == '__main__':
+    print(f"Using device: {DEVICE}")
+    print(f"Test set size: {len(test_dataset)}")
+    print(f"Model path: {MODEL_SAVE_PATH}")
+    print("Starting evaluation...")
     evaluate_model()

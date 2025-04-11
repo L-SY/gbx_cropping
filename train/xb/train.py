@@ -9,18 +9,17 @@ from PIL import Image
 from tqdm import tqdm
 
 # 设置路径
-PROCESSED_DATA_DIR = '/home/siyang_liu/gbx_cropping_ws/train/whole/augmented_dataset'
-MODEL_SAVE_DIR = '/home/siyang_liu/gbx_cropping_ws/train/xb/whole_fifteen_epoch50'
+PROCESSED_DATA_DIR = '/home/siyang_liu/gbx_cropping_ws/train/first_second/augmented_dataset'
+MODEL_SAVE_DIR = '/home/siyang_liu/gbx_cropping_ws/train/xb/first_second'
 BEST_MODEL_PATH = os.path.join(MODEL_SAVE_DIR, 'best_model.pth')
-FINAL_MODEL_PATH = os.path.join(MODEL_SAVE_DIR, 'final_model.pth')
 
 # 超参数设置
 BATCH_SIZE = 64
-NUM_EPOCHS = 50
+NUM_EPOCHS = 200
 INITIAL_LR = 1e-4  # 初始学习率
 MIN_LR = 1e-6  # 最小学习率
 WEIGHT_DECAY = 1e-4  # 权重衰减，帮助正则化
-DROPOUT_RATE = 0.5  # 增加Dropout率
+DROPOUT_RATE = 0.3  # 还原为原始的Dropout率
 PATIENCE = 20  # 早停的耐心值
 LR_PATIENCE = 5  # 学习率调整的耐心值
 LR_FACTOR = 0.5  # 学习率衰减因子
@@ -69,36 +68,15 @@ val_dataset = MPPDataset(os.path.join(PROCESSED_DATA_DIR, 'val/val_labels.csv'),
                          transform=transform)
 val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
-# 模型定义 - 增加Dropout层
-class ResNetWithDropout(nn.Module):
-    def __init__(self, dropout_rate=0.5):
-        super(ResNetWithDropout, self).__init__()
-        resnet = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
-        self.features = nn.Sequential(*list(resnet.children())[:-1])
-        self.flatten = nn.Flatten()
-        self.dropout1 = nn.Dropout(dropout_rate)
-        self.fc1 = nn.Linear(resnet.fc.in_features, 512)
-        self.relu = nn.ReLU()
-        self.dropout2 = nn.Dropout(dropout_rate)
-        self.fc2 = nn.Linear(512, 256)
-        self.dropout3 = nn.Dropout(dropout_rate)
-        self.fc3 = nn.Linear(256, 1)
-
-    def forward(self, x):
-        x = self.features(x)
-        x = self.flatten(x)
-        x = self.dropout1(x)
-        x = self.fc1(x)
-        x = self.relu(x)
-        x = self.dropout2(x)
-        x = self.fc2(x)
-        x = self.relu(x)
-        x = self.dropout3(x)
-        x = self.fc3(x)
-        return x
-
-# 初始化模型
-model = ResNetWithDropout(dropout_rate=DROPOUT_RATE).to(DEVICE)
+# 还原为原始的模型定义
+model = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
+model.fc = nn.Sequential(
+    nn.Linear(model.fc.in_features, 256),
+    nn.ReLU(),
+    nn.Dropout(DROPOUT_RATE),
+    nn.Linear(256, 1)
+)
+model = model.to(DEVICE)
 
 # 损失函数与优化器
 criterion = nn.MSELoss()
@@ -231,10 +209,6 @@ def train_model():
         if early_stopping.early_stop:
             print(f"Early stopping triggered! No improvement for {PATIENCE} consecutive epochs.")
             break
-
-    # 保存最后一个epoch的模型
-    torch.save(model.state_dict(), FINAL_MODEL_PATH)
-    print(f'Final model saved to {FINAL_MODEL_PATH}')
 
     # 加载最佳模型用于评估
     early_stopping.load_checkpoint(model)
