@@ -9,18 +9,18 @@ from PIL import Image
 from tqdm import tqdm
 
 # 设置路径
-PROCESSED_DATA_DIR = '/home/siyang_liu/gbx_cropping_ws/train/first_second/augmented_dataset'
-MODEL_SAVE_DIR = '/home/siyang_liu/gbx_cropping_ws/train/xb/first_second'
+PROCESSED_DATA_DIR = '/home/siyang_liu/gbx_cropping_ws/train/hand_cropping/whole/augmented_dataset'
+MODEL_SAVE_DIR = '/home/siyang_liu/gbx_cropping_ws/train/xb/hand_cropping/whole_epoch2k'
 BEST_MODEL_PATH = os.path.join(MODEL_SAVE_DIR, 'best_model.pth')
 
 # 超参数设置
 BATCH_SIZE = 64
-NUM_EPOCHS = 200
+NUM_EPOCHS = 2000
 INITIAL_LR = 1e-4  # 初始学习率
 MIN_LR = 1e-6  # 最小学习率
 WEIGHT_DECAY = 1e-4  # 权重衰减，帮助正则化
 DROPOUT_RATE = 0.3  # 还原为原始的Dropout率
-PATIENCE = 20  # 早停的耐心值
+PATIENCE = 500  # 早停的耐心值
 LR_PATIENCE = 5  # 学习率调整的耐心值
 LR_FACTOR = 0.5  # 学习率衰减因子
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

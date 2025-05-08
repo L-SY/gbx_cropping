@@ -9,9 +9,9 @@ from PIL import Image
 from sklearn.metrics import mean_squared_error, r2_score
 
 # 设置路径
-PROCESSED_DATA_DIR = '/home/siyang_liu/gbx_cropping_ws/train/whole/augmented_dataset'
-MODEL_SAVE_PATH = '/home/siyang_liu/gbx_cropping_ws/train/xb/whole_fifteen_epoch200/best_model.pth'
-OUTPUT_DIR = '/home/siyang_liu/gbx_cropping_ws/train/xb/whole_fifteen_epoch200'
+PROCESSED_DATA_DIR = '/home/siyang_liu/gbx_cropping_ws/train/hand_cropping/third/augmented_dataset'
+MODEL_SAVE_PATH = '/home/siyang_liu/gbx_cropping_ws/train/xb/hand_cropping/first_second/best_model.pth'
+OUTPUT_DIR = '/home/siyang_liu/gbx_cropping_ws/train/xb/hand_cropping/first_second/evaluate/2third'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -45,8 +45,8 @@ transform = transforms.Compose([
 ])
 
 # 数据加载
-test_dataset = MPPDataset(os.path.join(PROCESSED_DATA_DIR, 'test/test_labels.csv'),
-                          os.path.join(PROCESSED_DATA_DIR, 'test'),
+test_dataset = MPPDataset(os.path.join(PROCESSED_DATA_DIR, 'all/all_labels.csv'),
+                          os.path.join(PROCESSED_DATA_DIR, 'all'),
                           transform=transform)
 test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False)
 
@@ -155,7 +155,7 @@ def evaluate_model():
         plt.figure(figsize=(15, 10))
 
         for i, (_, row) in enumerate(worst_predictions.head(n_worst).iterrows()):
-            img_path = os.path.join(PROCESSED_DATA_DIR, 'test', row['filename'])
+            img_path = os.path.join(PROCESSED_DATA_DIR, 'all', row['filename'])
             img = Image.open(img_path).convert('RGB')
 
             plt.subplot(1, n_worst, i+1)
