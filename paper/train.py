@@ -90,7 +90,7 @@ class EarlyStopping:
 
     def load_checkpoint(self, model):
         """Load best model checkpoint"""
-        model.load_state_dict(torch.load(self.path))
+        model.load_state_dict(torch.load(self.path, weights_only=True))
 
 # 获取当前学习率
 def get_lr(optimizer):
@@ -98,9 +98,10 @@ def get_lr(optimizer):
         return param_group['lr']
 
 # 训练函数
-def train_model():
+def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler,
+                device, num_epochs, early_stopper, save_path):
     # 初始化早停工具
-    early_stopping = EarlyStopping(patience=PATIENCE, path=BEST_MODEL_PATH)
+    early_stopping = early_stopper
 
     # 存储训练历史
     history = {
@@ -109,14 +110,14 @@ def train_model():
         'learning_rates': []
     }
 
-    for epoch in range(NUM_EPOCHS):
+    for epoch in range(num_epochs):
         # 训练阶段
         model.train()
         total_train_loss = 0.0
-        train_bar = tqdm(train_loader, desc=f'Training Epoch {epoch+1}/{NUM_EPOCHS}')
+        train_bar = tqdm(train_loader, desc=f'Training Epoch {epoch+1}/{num_epochs}')
 
         for images, labels in train_bar:
-            images, labels = images.to(DEVICE), labels.to(DEVICE)
+            images, labels = images.to(device), labels.to(device)
 
             optimizer.zero_grad()
             outputs = model(images).reshape(-1)
@@ -136,11 +137,11 @@ def train_model():
         # 验证阶段
         model.eval()
         total_val_loss = 0.0
-        val_bar = tqdm(val_loader, desc=f'Validation Epoch {epoch+1}/{NUM_EPOCHS}')
+        val_bar = tqdm(val_loader, desc=f'Validation Epoch {epoch+1}/{num_epochs}')
 
         with torch.no_grad():
             for images, labels in val_bar:
-                images, labels = images.to(DEVICE), labels.to(DEVICE)
+                images, labels = images.to(device), labels.to(device)
 
                 outputs = model(images).reshape(-1)
                 labels = labels.reshape(-1)
@@ -160,7 +161,7 @@ def train_model():
         if new_lr != current_lr:
             print(f'Learning rate decreased from {current_lr:.6f} to {new_lr:.6f}')
 
-        print(f'Epoch [{epoch+1}/{NUM_EPOCHS}], '
+        print(f'Epoch [{epoch+1}/{num_epochs}], '
               f'Train Loss: {avg_train_loss:.4f}, '
               f'Val Loss: {avg_val_loss:.4f}, '
               f'LR: {get_lr(optimizer):.6f}')
@@ -171,7 +172,7 @@ def train_model():
             print(f'Validation loss improved to {avg_val_loss:.4f}. Model saved!')
 
         if early_stopping.early_stop:
-            print(f"Early stopping triggered! No improvement for {PATIENCE} consecutive epochs.")
+            print(f"Early stopping triggered! No improvement for {patience} consecutive epochs.")
             break
 
     # 加载最佳模型用于评估
@@ -181,16 +182,16 @@ def train_model():
     return history
 
 # 评估函数
-def evaluate_model():
+def evaluate_model(model, val_loader, criterion, device, best_model_path):
     # 加载最佳模型
-    model.load_state_dict(torch.load(BEST_MODEL_PATH))
+    model.load_state_dict(torch.load(best_model_path, weights_only=True))
     model.eval()
 
     total_val_loss = 0.0
 
     with torch.no_grad():
         for images, labels in val_loader:
-            images, labels = images.to(DEVICE), labels.to(DEVICE)
+            images, labels = images.to(device), labels.to(device)
 
             outputs = model(images).reshape(-1)
             labels = labels.reshape(-1)
@@ -202,7 +203,7 @@ def evaluate_model():
     print(f'Best model validation loss: {avg_val_loss:.4f}')
 
 # 可视化训练结果
-def plot_training_history(history):
+def plot_training_history(history, model_save_dir):
     import matplotlib.pyplot as plt
 
     # 创建带有两个Y轴的图
@@ -229,7 +230,7 @@ def plot_training_history(history):
 
     plt.title('Training History')
     plt.tight_layout()
-    plt.savefig(os.path.join(MODEL_SAVE_DIR, 'training_history.png'))
+    plt.savefig(os.path.join(model_save_dir, 'training_history.png'))
     plt.close()
 
 def main():
@@ -237,14 +238,14 @@ def main():
     parser.add_argument('--data_dir', type=str, required=True, help='Directory containing processed dataset')
     parser.add_argument('--output_dir', type=str, required=True, help='Directory to save model and results')
     parser.add_argument('--model', type=str, default='resnet50', help='Model architecture: resnet18/resnet34/resnet50 etc.')
-    parser.add_argument('--epochs', type=int, default=200)
+    parser.add_argument('--epochs', type=int, default=20)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--min_lr', type=float, default=1e-6)
     parser.add_argument('--dropout', type=float, default=0.3)
     args = parser.parse_args()
 
-    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     model_save_dir = os.path.join(args.output_dir, f"{args.model}_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
     os.makedirs(model_save_dir, exist_ok=True)
@@ -264,22 +265,22 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
 
-    model = get_model(args.model, args.dropout).to(DEVICE)
+    model = get_model(args.model, args.dropout).to(device)
 
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
                                                            factor=0.5, patience=5, min_lr=args.min_lr, verbose=True)
 
-    print(f"Using device: {DEVICE}")
+    print(f"Using device: {device}")
     print(f"Training set size: {len(train_dataset)}, Validation set size: {len(val_dataset)}")
 
     early_stopper = EarlyStopping(patience=500, path=best_model_path)
     history = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler,
-                          device=DEVICE, num_epochs=args.epochs,
+                          device=device, num_epochs=args.epochs,
                           early_stopper=early_stopper, save_path=best_model_path)
 
-    evaluate_model(model, val_loader, criterion, DEVICE, best_model_path)
+    evaluate_model(model, val_loader, criterion, device, best_model_path)
     plot_training_history(history, model_save_dir)
 
 if __name__ == '__main__':
