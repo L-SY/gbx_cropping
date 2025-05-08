@@ -1,32 +1,42 @@
 import os
+import argparse
 import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from torchvision import models, transforms
-from torchvision.models import ResNet50_Weights
+from torchvision import transforms, models
 from PIL import Image
 from tqdm import tqdm
+from datetime import datetime
 
-# 设置路径
-PROCESSED_DATA_DIR = '/home/siyang_liu/gbx_cropping_ws/train/hand_cropping/whole/augmented_dataset'
-MODEL_SAVE_DIR = '/home/siyang_liu/gbx_cropping_ws/train/xb/hand_cropping/whole_epoch2k'
-BEST_MODEL_PATH = os.path.join(MODEL_SAVE_DIR, 'best_model.pth')
+# 模型选择函数
+def get_model(model_name: str, dropout_rate: float) -> nn.Module:
+    model_name = model_name.lower()
+    model_func = getattr(models, model_name, None)
+    if model_func is None:
+        raise ValueError(f"Unsupported model: {model_name}")
 
-# 超参数设置
-BATCH_SIZE = 64
-NUM_EPOCHS = 2000
-INITIAL_LR = 1e-4  # 初始学习率
-MIN_LR = 1e-6  # 最小学习率
-WEIGHT_DECAY = 1e-4  # 权重衰减，帮助正则化
-DROPOUT_RATE = 0.3  # 还原为原始的Dropout率
-PATIENCE = 500  # 早停的耐心值
-LR_PATIENCE = 5  # 学习率调整的耐心值
-LR_FACTOR = 0.5  # 学习率衰减因子
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = model_func(weights="IMAGENET1K_V1")
 
-# 确保模型保存目录存在
-os.makedirs(MODEL_SAVE_DIR, exist_ok=True)
+    if 'densenet' in model_name:
+        num_features = model.classifier.in_features
+        model.classifier = nn.Sequential(
+            nn.Linear(num_features, 256),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(256, 1)
+        )
+    else:
+        num_features = model.fc.in_features
+        model.fc = nn.Sequential(
+            nn.Linear(num_features, 256),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(256, 1)
+        )
+
+    return model
+
 
 # 数据集定义
 class MPPDataset(torch.utils.data.Dataset):
@@ -42,55 +52,9 @@ class MPPDataset(torch.utils.data.Dataset):
         img_name = os.path.join(self.root_dir, self.labels_df.iloc[idx]['image_name'])
         image = Image.open(img_name).convert('RGB')
         label = torch.tensor(self.labels_df.iloc[idx]['label'], dtype=torch.float32)
-
         if self.transform:
             image = self.transform(image)
-
         return image, label
-
-# 数据转换
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    # transforms.RandomHorizontalFlip(),
-    # transforms.RandomVerticalFlip(),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
-
-# 数据加载
-train_dataset = MPPDataset(os.path.join(PROCESSED_DATA_DIR, 'train/train_labels.csv'),
-                           os.path.join(PROCESSED_DATA_DIR, 'train'),
-                           transform=transform)
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-
-val_dataset = MPPDataset(os.path.join(PROCESSED_DATA_DIR, 'val/val_labels.csv'),
-                         os.path.join(PROCESSED_DATA_DIR, 'val'),
-                         transform=transform)
-val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
-
-# 还原为原始的模型定义
-model = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
-model.fc = nn.Sequential(
-    nn.Linear(model.fc.in_features, 256),
-    nn.ReLU(),
-    nn.Dropout(DROPOUT_RATE),
-    nn.Linear(256, 1)
-)
-model = model.to(DEVICE)
-
-# 损失函数与优化器
-criterion = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=INITIAL_LR, weight_decay=WEIGHT_DECAY)
-
-# 学习率调度器 - 根据验证损失进行调整
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer,
-    mode='min',
-    factor=LR_FACTOR,
-    patience=LR_PATIENCE,
-    verbose=True,
-    min_lr=MIN_LR
-)
 
 # 早停工具类
 class EarlyStopping:
@@ -268,20 +232,55 @@ def plot_training_history(history):
     plt.savefig(os.path.join(MODEL_SAVE_DIR, 'training_history.png'))
     plt.close()
 
-if __name__ == '__main__':
+def main():
+    parser = argparse.ArgumentParser(description="Train a regression model on image data")
+    parser.add_argument('--data_dir', type=str, required=True, help='Directory containing processed dataset')
+    parser.add_argument('--output_dir', type=str, required=True, help='Directory to save model and results')
+    parser.add_argument('--model', type=str, default='resnet50', help='Model architecture: resnet18/resnet34/resnet50 etc.')
+    parser.add_argument('--epochs', type=int, default=200)
+    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--min_lr', type=float, default=1e-6)
+    parser.add_argument('--dropout', type=float, default=0.3)
+    args = parser.parse_args()
+
+    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    model_save_dir = os.path.join(args.output_dir, f"{args.model}_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    os.makedirs(model_save_dir, exist_ok=True)
+    best_model_path = os.path.join(model_save_dir, 'best_model.pth')
+
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+
+    train_dataset = MPPDataset(os.path.join(args.data_dir, 'train/train_labels.csv'),
+                               os.path.join(args.data_dir, 'train'), transform)
+    val_dataset = MPPDataset(os.path.join(args.data_dir, 'val/val_labels.csv'),
+                             os.path.join(args.data_dir, 'val'), transform)
+
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+
+    model = get_model(args.model, args.dropout).to(DEVICE)
+
+    criterion = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min',
+                                                           factor=0.5, patience=5, min_lr=args.min_lr, verbose=True)
+
     print(f"Using device: {DEVICE}")
-    print(f"Training set size: {len(train_dataset)}")
-    print(f"Validation set size: {len(val_dataset)}")
+    print(f"Training set size: {len(train_dataset)}, Validation set size: {len(val_dataset)}")
 
-    # 开始训练
-    history = train_model()
+    early_stopper = EarlyStopping(patience=500, path=best_model_path)
+    history = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler,
+                          device=DEVICE, num_epochs=args.epochs,
+                          early_stopper=early_stopper, save_path=best_model_path)
 
-    # 评估最佳模型
-    evaluate_model()
+    evaluate_model(model, val_loader, criterion, DEVICE, best_model_path)
+    plot_training_history(history, model_save_dir)
 
-    # 可视化训练历史（需要matplotlib）
-    try:
-        plot_training_history(history)
-        print(f"Training history plot saved to {os.path.join(MODEL_SAVE_DIR, 'training_history.png')}")
-    except Exception as e:
-        print(f"Could not plot training history: {e}")
+if __name__ == '__main__':
+    main()
