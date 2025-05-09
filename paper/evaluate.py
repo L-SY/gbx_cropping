@@ -9,33 +9,33 @@ import torch.nn as nn
 from PIL import Image
 from sklearn.metrics import mean_squared_error, r2_score
 from scipy import stats
-
+from train import get_model
 # 模型定义函数（与训练脚本保持一致）
-def get_model(model_name: str, dropout_rate: float):
-    model_name = model_name.lower()
-    model_func = getattr(models, model_name, None)
-    if model_func is None:
-        raise ValueError(f"Unsupported model: {model_name}")
-    model = model_func(weights=None)
-    if 'densenet' in model_name:
-        in_features = model.classifier.in_features
-        model.classifier = nn.Sequential(
-            nn.Linear(in_features, 256),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(256, 1)
-        )
-    else:
-        in_features = model.fc.in_features
-        model.fc = nn.Sequential(
-            nn.Linear(in_features, 256),
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(256, 1)
-        )
-    return model
-
-# 数据集定义
+# def get_model(model_name: str, dropout_rate: float):
+#     model_name = model_name.lower()
+#     model_func = getattr(models, model_name, None)
+#     if model_func is None:
+#         raise ValueError(f"Unsupported model: {model_name}")
+#     model = model_func(weights=None)
+#     if 'densenet' in model_name:
+#         in_features = model.classifier.in_features
+#         model.classifier = nn.Sequential(
+#             nn.Linear(in_features, 256),
+#             nn.ReLU(),
+#             nn.Dropout(dropout_rate),
+#             nn.Linear(256, 1)
+#         )
+#     else:
+#         in_features = model.fc.in_features
+#         model.fc = nn.Sequential(
+#             nn.Linear(in_features, 256),
+#             nn.ReLU(),
+#             nn.Dropout(dropout_rate),
+#             nn.Linear(256, 1)
+#         )
+#     return model
+#
+# # 数据集定义
 class MPPDataset(torch.utils.data.Dataset):
     def __init__(self, csv_file, root_dir, transform=None):
         self.labels_df = pd.read_csv(csv_file)
@@ -143,11 +143,12 @@ if __name__ == '__main__':
     parser.add_argument('--model_path', type=str, required=True, help='Path to .pth model')
     parser.add_argument('--output_dir', type=str, required=True, help='Path to save evaluation outputs')
     parser.add_argument('--model', type=str, default='resnet50', help='Model name (resnet50, densenet121, etc.)')
-    parser.add_argument('--dropout', type=float, default=0.3, help='Dropout rate')
+    parser.add_argument('--dropout', type=float, default=0.5, help='Dropout rate')
+    parser.add_argument('--freeze', action='store_true', help='Freeze backbone weights (default: False)')
     args = parser.parse_args()
 
-    DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {DEVICE}")
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
 
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
@@ -161,6 +162,6 @@ if __name__ == '__main__':
                               transform=transform)
     test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False)
 
-    model = get_model(args.model, args.dropout).to(DEVICE)
+    model = get_model(args.model, args.dropout, args.freeze).to(device)
     model.load_state_dict(torch.load(args.model_path, weights_only=True))
-    evaluate_model(model, test_loader, DEVICE, args.output_dir, os.path.join(args.data_dir, 'test'))
+    evaluate_model(model, test_loader, device, args.output_dir, os.path.join(args.data_dir, 'test'))

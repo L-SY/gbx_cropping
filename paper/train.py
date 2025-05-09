@@ -9,15 +9,33 @@ from PIL import Image
 from tqdm import tqdm
 from datetime import datetime
 
+import random
+import numpy as np
+torch.manual_seed(42)
+np.random.seed(42)
+random.seed(42)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
 # 模型选择函数
-def get_model(model_name: str, dropout_rate: float) -> nn.Module:
+import torch.nn as nn
+from torchvision import models
+
+def get_model(model_name: str, dropout_rate: float, freeze_backbone: bool) -> nn.Module:
     model_name = model_name.lower()
     model_func = getattr(models, model_name, None)
     if model_func is None:
         raise ValueError(f"Unsupported model: {model_name}")
 
+    # 加载预训练模型
     model = model_func(weights="IMAGENET1K_V1")
 
+    # 冻结全部参数（如果指定）
+    if freeze_backbone:
+        for param in model.parameters():
+            param.requires_grad = False
+
+    # 替换分类头为回归头
     if 'densenet' in model_name:
         num_features = model.classifier.in_features
         model.classifier = nn.Sequential(
@@ -26,6 +44,10 @@ def get_model(model_name: str, dropout_rate: float) -> nn.Module:
             nn.Dropout(dropout_rate),
             nn.Linear(256, 1)
         )
+        # 如果只训练回归头，则启用 classifier
+        if freeze_backbone:
+            for param in model.classifier.parameters():
+                param.requires_grad = True
     else:
         num_features = model.fc.in_features
         model.fc = nn.Sequential(
@@ -34,8 +56,12 @@ def get_model(model_name: str, dropout_rate: float) -> nn.Module:
             nn.Dropout(dropout_rate),
             nn.Linear(256, 1)
         )
+        if freeze_backbone:
+            for param in model.fc.parameters():
+                param.requires_grad = True
 
     return model
+
 
 
 # 数据集定义
@@ -172,7 +198,7 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, scheduler
             print(f'Validation loss improved to {avg_val_loss:.4f}. Model saved!')
 
         if early_stopping.early_stop:
-            print(f"Early stopping triggered! No improvement for {patience} consecutive epochs.")
+            print(f"Early stopping triggered! No improvement consecutive epochs.")
             break
 
     # 加载最佳模型用于评估
@@ -238,16 +264,21 @@ def main():
     parser.add_argument('--data_dir', type=str, required=True, help='Directory containing processed dataset')
     parser.add_argument('--output_dir', type=str, required=True, help='Directory to save model and results')
     parser.add_argument('--model', type=str, default='resnet50', help='Model architecture: resnet18/resnet34/resnet50 etc.')
-    parser.add_argument('--epochs', type=int, default=20)
+    parser.add_argument('--epochs', type=int, default=200)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--min_lr', type=float, default=1e-6)
     parser.add_argument('--dropout', type=float, default=0.3)
+    parser.add_argument('--freeze', action='store_true', help='Freeze backbone weights (default: False)')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model_save_dir = os.path.join(args.output_dir, f"{args.model}_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+    freeze_tag = "_freeze" if args.freeze else ""
+    model_save_dir = os.path.join(
+        args.output_dir,
+        f"{args.model}{freeze_tag}_run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    )
     os.makedirs(model_save_dir, exist_ok=True)
     best_model_path = os.path.join(model_save_dir, 'best_model.pth')
 
@@ -265,7 +296,7 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
 
-    model = get_model(args.model, args.dropout).to(device)
+    model = get_model(args.model, args.dropout, args.freeze).to(device)
 
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
@@ -275,7 +306,7 @@ def main():
     print(f"Using device: {device}")
     print(f"Training set size: {len(train_dataset)}, Validation set size: {len(val_dataset)}")
 
-    early_stopper = EarlyStopping(patience=500, path=best_model_path)
+    early_stopper = EarlyStopping(patience=50, path=best_model_path)
     history = train_model(model, train_loader, val_loader, criterion, optimizer, scheduler,
                           device=device, num_epochs=args.epochs,
                           early_stopper=early_stopper, save_path=best_model_path)
