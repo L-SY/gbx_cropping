@@ -40,6 +40,13 @@ def detect_circles_contour(gray, image, debug=False):
 
     return centers
 
+def filter_nearby_circles(circles, min_dist=30):
+    filtered = []
+    for c in circles:
+        if all(np.linalg.norm(np.array(c[:2]) - np.array(f[:2])) > min_dist for f in filtered):
+            filtered.append(c)
+    return filtered
+
 def detect_circles_hough(gray, image):
     circles = cv2.HoughCircles(
         gray,
@@ -54,6 +61,7 @@ def detect_circles_hough(gray, image):
     centers = []
     if circles is not None:
         circles = np.uint16(np.around(circles[0]))
+        circles = filter_nearby_circles(circles, min_dist=30)
         for (x, y, r) in circles:
             centers.append((x, y))
             cv2.circle(image, (x, y), r, (0, 255, 0), 2)
@@ -71,14 +79,15 @@ def process_image(image_path, use_hough=False, combine=False, debug=False):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     draw_image = image.copy()
 
-    centers_c = detect_circles_contour(gray, draw_image, debug=debug)
-    centers_h = detect_circles_hough(gray, draw_image) if use_hough else []
-
     if combine:
+        centers_c = detect_circles_contour(gray, draw_image, debug=debug)
+        centers_h = detect_circles_hough(gray, draw_image) if use_hough else []
         centers_all = list({(x, y) for (x, y) in centers_c + centers_h})
     elif use_hough:
+        centers_h = detect_circles_hough(gray, draw_image) if use_hough else []
         centers_all = centers_h
     else:
+        centers_c = detect_circles_contour(gray, draw_image, debug=debug)
         centers_all = centers_c
 
     print(f"Number of detected circles: {len(centers_all)}")
@@ -92,31 +101,42 @@ def process_image(image_path, use_hough=False, combine=False, debug=False):
     os.makedirs(marked_dir, exist_ok=True)
 
     if len(centers_all) >= 3:
-        pts = np.array(centers_all, dtype=np.int32)
-        # Compute bounding rectangle aligned along the longest axis (assume alignment along line)
-        x_coords = pts[:, 0]
-        y_coords = pts[:, 1]
-        x_min, x_max = x_coords.min(), x_coords.max()
-        y_min, y_max = y_coords.min(), y_coords.max()
+        pts = np.array(centers_all, dtype=np.float32)
+        # 按 y 坐标排序，划分上下行
+        pts_sorted = pts[np.argsort(pts[:, 1])]
+        mid_y = np.median(pts[:, 1])
+        top_row = pts_sorted[pts_sorted[:, 1] <= mid_y]
+        bottom_row = pts_sorted[pts_sorted[:, 1] > mid_y]
 
-        # Expand to rectangular ROI covering all points in a line
-        padding = 20  # Optional padding
-        if (x_max - x_min) > (y_max - y_min):
-            y_center = int(np.mean(y_coords))
-            height = max(50, int((y_max - y_min) * 1.5))
-            y_crop_min = max(0, y_center - height // 2 - padding)
-            y_crop_max = min(image.shape[0], y_center + height // 2 + padding)
-            cropped = image[y_crop_min:y_crop_max, x_min - padding:x_max + padding]
-        else:
-            x_center = int(np.mean(x_coords))
-            width = max(50, int((x_max - x_min) * 1.5))
-            x_crop_min = max(0, x_center - width // 2 - padding)
-            x_crop_max = min(image.shape[1], x_center + width // 2 + padding)
-            cropped = image[y_min - padding:y_max + padding, x_crop_min:x_crop_max]
+        if len(top_row) < 2 or len(bottom_row) < 2:
+            print("⚠️ Not enough points in top or bottom row to define a rectangle.")
+            return
 
+        # 左右边界取所有点的最左和最右，保证贴近边缘
+        min_x = np.min(pts[:, 0])
+        max_x = np.max(pts[:, 0])
+        top_y = np.min(top_row[:, 1])
+        bottom_y = np.max(bottom_row[:, 1])
+
+        margin = 5  # 可调，设为 0 表示最贴合
+
+        rect_pts = np.array([
+            [min_x - margin, top_y - margin],      # top-left
+            [max_x + margin, top_y - margin],      # top-right
+            [max_x + margin, bottom_y + margin],   # bottom-right
+            [min_x - margin, bottom_y + margin]    # bottom-left
+        ], dtype=np.float32)
+
+        width = int(np.linalg.norm(rect_pts[1] - rect_pts[0]))
+        height = int(np.linalg.norm(rect_pts[3] - rect_pts[0]))
+        dst_pts = np.array([[0, 0], [width, 0], [width, height], [0, height]], dtype=np.float32)
+
+        M = cv2.getPerspectiveTransform(rect_pts, dst_pts)
+        cropped = cv2.warpPerspective(image, M, (width, height))
         cropped_path = os.path.join(cropped_dir, os.path.basename(base_name) + "_cropped.jpg")
         cv2.imwrite(cropped_path, cropped)
         print(f"✅ Cropped image saved to: {cropped_path}")
+
 
     marked_path = os.path.join(marked_dir, os.path.basename(base_name) + "_marked.jpg")
     cv2.imwrite(marked_path, draw_image)
