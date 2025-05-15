@@ -67,34 +67,60 @@ def process_image(image_path, use_hough=False, combine=False, debug=False):
         return
 
     base_name = os.path.splitext(image_path)[0]
+    base_dir = os.path.dirname(image_path)
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     draw_image = image.copy()
 
+    centers_c = detect_circles_contour(gray, draw_image, debug=debug)
+    centers_h = detect_circles_hough(gray, draw_image) if use_hough else []
+
     if combine:
-        centers_c = detect_circles_contour(gray, draw_image, debug=debug)
-        centers_h = detect_circles_hough(gray, draw_image) if use_hough else []
         centers_all = list({(x, y) for (x, y) in centers_c + centers_h})
     elif use_hough:
-        centers_h = detect_circles_hough(gray, draw_image) if use_hough else []
         centers_all = centers_h
     else:
-        centers_c = detect_circles_contour(gray, draw_image, debug=debug)
         centers_all = centers_c
 
     print(f"Number of detected circles: {len(centers_all)}")
     for i, (x, y) in enumerate(centers_all):
         print(f"  Circle {i+1}: x={x}, y={y}")
 
+    # Create output folders
+    cropped_dir = os.path.join(base_dir, "cropped")
+    marked_dir = os.path.join(base_dir, "marked")
+    os.makedirs(cropped_dir, exist_ok=True)
+    os.makedirs(marked_dir, exist_ok=True)
+
     if len(centers_all) >= 3:
         pts = np.array(centers_all, dtype=np.int32)
-        hull = cv2.convexHull(pts)
-        x, y, w, h = cv2.boundingRect(hull)
-        cropped = image[y:y+h, x:x+w]
-        cv2.imwrite(base_name + "_cropped.jpg", cropped)
-        print(f"✅ Cropped image saved to: {base_name}_cropped.jpg")
+        # Compute bounding rectangle aligned along the longest axis (assume alignment along line)
+        x_coords = pts[:, 0]
+        y_coords = pts[:, 1]
+        x_min, x_max = x_coords.min(), x_coords.max()
+        y_min, y_max = y_coords.min(), y_coords.max()
 
-    cv2.imwrite(base_name + "_marked.jpg", draw_image)
-    print(f"✅ Marked image saved to: {base_name}_marked.jpg")
+        # Expand to rectangular ROI covering all points in a line
+        padding = 20  # Optional padding
+        if (x_max - x_min) > (y_max - y_min):
+            y_center = int(np.mean(y_coords))
+            height = max(50, int((y_max - y_min) * 1.5))
+            y_crop_min = max(0, y_center - height // 2 - padding)
+            y_crop_max = min(image.shape[0], y_center + height // 2 + padding)
+            cropped = image[y_crop_min:y_crop_max, x_min - padding:x_max + padding]
+        else:
+            x_center = int(np.mean(x_coords))
+            width = max(50, int((x_max - x_min) * 1.5))
+            x_crop_min = max(0, x_center - width // 2 - padding)
+            x_crop_max = min(image.shape[1], x_center + width // 2 + padding)
+            cropped = image[y_min - padding:y_max + padding, x_crop_min:x_crop_max]
+
+        cropped_path = os.path.join(cropped_dir, os.path.basename(base_name) + "_cropped.jpg")
+        cv2.imwrite(cropped_path, cropped)
+        print(f"✅ Cropped image saved to: {cropped_path}")
+
+    marked_path = os.path.join(marked_dir, os.path.basename(base_name) + "_marked.jpg")
+    cv2.imwrite(marked_path, draw_image)
+    print(f"✅ Marked image saved to: {marked_path}")
 
     if debug:
         plt.imshow(cv2.cvtColor(draw_image, cv2.COLOR_BGR2RGB))
