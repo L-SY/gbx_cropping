@@ -102,45 +102,84 @@ def process_image(image_path, use_hough=False, combine=False, debug=False):
 
     if len(centers_all) >= 3:
         pts = np.array(centers_all, dtype=np.float32)
-        # 按 y 坐标排序，划分上下行
-        pts_sorted = pts[np.argsort(pts[:, 1])]
-        mid_y = np.median(pts[:, 1])
-        top_row = pts_sorted[pts_sorted[:, 1] <= mid_y]
-        bottom_row = pts_sorted[pts_sorted[:, 1] > mid_y]
 
-        if len(top_row) < 2 or len(bottom_row) < 2:
-            print("⚠️ Not enough points in top or bottom row to define a rectangle.")
+        best_score = float('inf')
+        best_result = None
+
+        for angle in range(-10, 11):  # 遍历角度 -10 到 10
+            # 旋转图像
+            h, w = image.shape[:2]
+            center = (w / 2, h / 2)
+            M_rot = cv2.getRotationMatrix2D(center, angle, 1.0)
+            rotated_img = cv2.warpAffine(image, M_rot, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
+            # 旋转圆心
+            ones = np.ones((pts.shape[0], 1))
+            pts_homo = np.hstack([pts, ones])
+            transformed_pts = (M_rot @ pts_homo.T).T
+
+            # 按 y 坐标排序，划分上下行
+            pts_sorted = transformed_pts[np.argsort(transformed_pts[:, 1])]
+            mid_y = np.median(transformed_pts[:, 1])
+            top_row = pts_sorted[pts_sorted[:, 1] <= mid_y]
+            bottom_row = pts_sorted[pts_sorted[:, 1] > mid_y]
+
+            if len(top_row) < 2 or len(bottom_row) < 2:
+                continue  # 不满足构成长方形条件
+
+            min_x = np.min(transformed_pts[:, 0])
+            max_x = np.max(transformed_pts[:, 0])
+            top_y = np.min(top_row[:, 1])
+            bottom_y = np.max(bottom_row[:, 1])
+
+            margin = 5
+            rect_pts = np.array([
+                [min_x - margin, top_y - margin],
+                [max_x + margin, top_y - margin],
+                [max_x + margin, bottom_y + margin],
+                [min_x - margin, bottom_y + margin]
+            ], dtype=np.float32)
+
+            # 计算平均距离作为评分指标
+            from shapely.geometry import LineString, Point
+            edges = [LineString([rect_pts[i], rect_pts[(i + 1) % 4]]) for i in range(4)]
+            total_dist = 0
+            for (x, y) in transformed_pts:
+                p = Point(x, y)
+                total_dist += sum([p.distance(edge) for edge in edges]) / 4
+            avg_dist = total_dist / len(transformed_pts)
+
+            if avg_dist < best_score:
+                best_score = avg_dist
+                best_result = (rotated_img, rect_pts.copy(), angle)
+
+        if best_result is None:
+            print("❌ 无法找到合适角度裁切")
             return
 
-        # 左右边界取所有点的最左和最右，保证贴近边缘
-        min_x = np.min(pts[:, 0])
-        max_x = np.max(pts[:, 0])
-        top_y = np.min(top_row[:, 1])
-        bottom_y = np.max(bottom_row[:, 1])
-
-        margin = 5  # 可调，设为 0 表示最贴合
-
-        rect_pts = np.array([
-            [min_x - margin, top_y - margin],      # top-left
-            [max_x + margin, top_y - margin],      # top-right
-            [max_x + margin, bottom_y + margin],   # bottom-right
-            [min_x - margin, bottom_y + margin]    # bottom-left
-        ], dtype=np.float32)
-
+        rotated_img, rect_pts, best_angle = best_result
         width = int(np.linalg.norm(rect_pts[1] - rect_pts[0]))
         height = int(np.linalg.norm(rect_pts[3] - rect_pts[0]))
         dst_pts = np.array([[0, 0], [width, 0], [width, height], [0, height]], dtype=np.float32)
 
-        M = cv2.getPerspectiveTransform(rect_pts, dst_pts)
-        cropped = cv2.warpPerspective(image, M, (width, height))
+        M_crop = cv2.getPerspectiveTransform(rect_pts, dst_pts)
+        cropped = cv2.warpPerspective(rotated_img, M_crop, (width, height))
+
         cropped_path = os.path.join(cropped_dir, os.path.basename(base_name) + "_cropped.jpg")
         cv2.imwrite(cropped_path, cropped)
         print(f"✅ Cropped image saved to: {cropped_path}")
 
+    # 可选调试标记图像
+    for pt in centers_all:
+        ones = np.array([pt[0], pt[1], 1.0])
+        transformed = M_rot @ ones
+        cv2.circle(rotated_img, (int(transformed[0]), int(transformed[1])), 5, (0, 0, 255), -1)
+    cv2.polylines(rotated_img, [np.int32(rect_pts)], isClosed=True, color=(0, 255, 0), thickness=2)
 
     marked_path = os.path.join(marked_dir, os.path.basename(base_name) + "_marked.jpg")
-    cv2.imwrite(marked_path, draw_image)
+    cv2.imwrite(marked_path, rotated_img)
     print(f"✅ Marked image saved to: {marked_path}")
+
 
     if debug:
         plt.imshow(cv2.cvtColor(draw_image, cv2.COLOR_BGR2RGB))
