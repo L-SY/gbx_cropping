@@ -39,18 +39,14 @@ private:
   // dynamic_reconfigure server
   std::shared_ptr<dynamic_reconfigure::Server<FoamStitchConfig>> dr_srv_;
 
-  // 拼接参数
-  int    max_width_;     // 当 panorama 宽度超过该值时，丢掉最左边部分
-  bool   auto_reset_;    // 接收到新图像时是否自动 reset
   std::string output_topic_;
 
-  // 拼接状态
-  cv::Mat            panorama_;
-  std::mutex         pano_mutex_;
-  cv::Mat           last_foam_;
-  // 动态参数：忽略过小或过大的 shift
-  int               min_shift_;
-  int               max_shift_;
+  cv::Mat panorama_;
+  cv::Mat last_foam_;
+  std::mutex pano_mutex_;
+  bool    auto_reset_;
+  int     min_shift_, max_shift_, max_width_;
+
 };
 
 }  // namespace runner
