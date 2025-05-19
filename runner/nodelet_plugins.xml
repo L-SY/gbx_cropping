@@ -1,0 +1,9 @@
+<library path="libextract_pp_nodelet">
+    <class name="runner/ExtractPPNodelet"
+           type="runner::ExtractPPNodelet"
+           base_class_type="nodelet::Nodelet">
+        <description>
+            Panel detector nodelet: undistort + panel foam detection
+        </description>
+    </class>
+</library>

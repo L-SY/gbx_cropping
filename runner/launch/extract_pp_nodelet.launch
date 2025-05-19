@@ -1,0 +1,5 @@
+<launch>
+    <node pkg="nodelet" type="nodelet" name="panel_detector_nodelet"
+          args="load runner/ExtractPPNodelet vision_nodelet">
+    </node>
+</launch>

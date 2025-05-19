@@ -1,0 +1,4 @@
+<launch>
+    <node pkg="runner" type="ros_high_undistort_extract_pp.py" name="panel_detector" output="screen">
+    </node>
+</launch>
