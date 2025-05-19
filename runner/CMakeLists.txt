@@ -12,6 +12,12 @@ find_package(catkin REQUIRED COMPONENTS
         image_transport
 )
 
+find_package(dynamic_reconfigure REQUIRED)
+
+generate_dynamic_reconfigure_options(
+        cfg/ExtractPP.cfg
+)
+
 catkin_package(
         CATKIN_DEPENDS rospy std_msgs sensor_msgs cv_bridge nodelet pluginlib image_transport
 )

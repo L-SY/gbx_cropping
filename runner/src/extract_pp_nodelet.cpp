@@ -5,7 +5,8 @@
 namespace runner {
 
 ExtractPPNodelet::ExtractPPNodelet()
-    : maps_initialized_(false), shutdown_(false) {}
+    : maps_initialized_(false), foam_width_ratio_(1.0), foam_height_ratio_(0.5),
+      shutdown_(false) {}
 
 ExtractPPNodelet::~ExtractPPNodelet() {
   {
@@ -19,7 +20,14 @@ ExtractPPNodelet::~ExtractPPNodelet() {
 
 void ExtractPPNodelet::onInit() {
   ros::NodeHandle &nh = getMTNodeHandle();
+  ros::NodeHandle &pnh = getMTPrivateNodeHandle();
 
+  // dynamic_reconfigure
+  dr_srv_.reset(new dynamic_reconfigure::Server<ExtractPPConfig>(pnh));
+  auto cb = boost::bind(&ExtractPPNodelet::reconfigureCallback, this, _1, _2);
+  dr_srv_->setCallback(cb);
+
+  // 发布原始 Image
   pub_result_ =
       nh.advertise<sensor_msgs::Image>("/panel_detector/result/image_raw", 1);
   pub_light_panel_ = nh.advertise<sensor_msgs::Image>(
@@ -27,17 +35,28 @@ void ExtractPPNodelet::onInit() {
   pub_foam_board_ = nh.advertise<sensor_msgs::Image>(
       "/panel_detector/foam_board/image_raw", 1);
 
+  // 订阅
   sub_ =
       nh.subscribe("/hk_camera/image_raw", 1, &ExtractPPNodelet::imageCb, this);
 
+  // 相机标定
   camera_matrix_ = (cv::Mat_<double>(3, 3) << 2343.181585, 0.0, 1221.765641,
                     0.0, 2341.245683, 1040.731733, 0.0, 0.0, 1.0);
   dist_coeffs_ =
       (cv::Mat_<double>(1, 5) << -0.080789, 0.084471, 0.000261, 0.000737, 0.0);
 
+  // 处理线程
   proc_thread_ = std::thread(&ExtractPPNodelet::processingLoop, this);
 
-  NODELET_INFO("ExtractPPNodelet (raw image) initialized.");
+  NODELET_INFO(
+      "ExtractPPNodelet initialized (raw/image + dynamic_reconfigure).");
+}
+
+void ExtractPPNodelet::reconfigureCallback(ExtractPPConfig &config, uint32_t) {
+  foam_width_ratio_ = config.foam_width_ratio;
+  foam_height_ratio_ = config.foam_height_ratio;
+  NODELET_INFO("Reconfigured: foam_width=%.2f foam_height=%.2f",
+               foam_width_ratio_, foam_height_ratio_);
 }
 
 void ExtractPPNodelet::imageCb(const sensor_msgs::ImageConstPtr &msg) {
@@ -62,20 +81,16 @@ void ExtractPPNodelet::processingLoop() {
     }
     if (msg) {
       try {
-        // 零拷贝获取 OpenCV 图
         auto cv_ptr = cv_bridge::toCvShare(msg, "bgr8");
         cv::Mat raw = cv_ptr->image;
 
-        // 第一次初始化畸变映射
         if (!maps_initialized_) {
           initUndistortMaps(raw.size());
         }
 
-        // 去畸变
         cv::Mat undist;
         cv::remap(raw, undist, map1_, map2_, cv::INTER_LINEAR);
 
-        // 核心处理 & 发布
         processImage(undist, msg->header.stamp);
       } catch (const std::exception &e) {
         NODELET_ERROR("Processing exception: %s", e.what());
@@ -96,7 +111,6 @@ void ExtractPPNodelet::initUndistortMaps(const cv::Size &image_size) {
 
 void ExtractPPNodelet::processImage(const cv::Mat &img,
                                     const ros::Time &stamp) {
-  // 1) Light Panel 检测
   cv::Mat light_panel;
   std::vector<cv::Point> panel_box;
   cv::Mat M;
@@ -108,21 +122,24 @@ void ExtractPPNodelet::processImage(const cv::Mat &img,
     return;
   }
 
-  // 2) Foam Board 提取
   cv::Mat foam;
   std::vector<cv::Point> foam_box;
   extractFoamBoard(light_panel, foam, foam_box);
 
-  // 3) 反透视变换
   auto foam_box_orig = transformFoamBoxToOriginal(foam_box, M);
 
-  // 4) 绘制并发布所有原始图
   cv::Mat annotated = img.clone();
   cv::drawContours(annotated, std::vector<std::vector<cv::Point>>{panel_box},
                    -1, cv::Scalar(0, 255, 0), 2);
   cv::drawContours(annotated,
                    std::vector<std::vector<cv::Point>>{foam_box_orig}, -1,
                    cv::Scalar(0, 0, 255), 2);
+
+  std::ostringstream oss;
+  oss << "FW=" << std::fixed << std::setprecision(2) << foam_width_ratio_
+      << " FH=" << foam_height_ratio_;
+  cv::putText(annotated, oss.str(), cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX,
+              0.8, cv::Scalar(255, 255, 255), 2);
   cv::putText(annotated, "Light Panel", panel_box[0] - cv::Point(0, 10),
               cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 0), 2);
   cv::putText(annotated, "Foam Board", foam_box_orig[0] - cv::Point(0, 10),
@@ -194,10 +211,23 @@ bool ExtractPPNodelet::detectLightPanel(const cv::Mat &img, cv::Mat &out_warped,
 
 void ExtractPPNodelet::extractFoamBoard(const cv::Mat &panel, cv::Mat &out_foam,
                                         std::vector<cv::Point> &out_box) {
-  int H = panel.rows, W = panel.cols;
-  int fh = H / 2, top = (H - fh) / 2;
-  out_foam = panel(cv::Rect(0, top, W, fh)).clone();
-  out_box = {{0, top}, {W - 1, top}, {W - 1, top + fh - 1}, {0, top + fh - 1}};
+  int W = panel.cols;
+  int H = panel.rows;
+  // 按最新运行时比例裁切
+  int fw = std::max(1, int(W * foam_width_ratio_));
+  int fh = std::max(1, int(H * foam_height_ratio_));
+  int left = (W - fw) / 2;
+  int top = (H - fh) / 2;
+  cv::Rect roi(left, top, fw, fh);
+
+  // 真正裁切
+  out_foam = panel(roi).clone();
+
+  // 在 warped panel 上输出 ROI 四点
+  out_box = {{roi.x, roi.y},
+             {roi.x + fw - 1, roi.y},
+             {roi.x + fw - 1, roi.y + fh - 1},
+             {roi.x, roi.y + fh - 1}};
 }
 
 std::vector<cv::Point> ExtractPPNodelet::transformFoamBoxToOriginal(
