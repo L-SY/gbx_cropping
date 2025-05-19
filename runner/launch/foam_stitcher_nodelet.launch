@@ -1,0 +1,4 @@
+<launch>
+    <node pkg="nodelet" type="nodelet" name="foam_stitch"
+          args="load runner/FoamStitchNodelet vision_nodelet" />
+</launch>

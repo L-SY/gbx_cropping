@@ -16,6 +16,7 @@ find_package(dynamic_reconfigure REQUIRED)
 
 generate_dynamic_reconfigure_options(
         cfg/ExtractPP.cfg
+        cfg/FoamStitch.cfg
 )
 
 catkin_package(
@@ -35,6 +36,9 @@ target_link_libraries(extract_pp_nodelet
         ${catkin_LIBRARIES}
         ${OpenCV_LIBRARIES}
 )
+
+add_library(foam_stitch_nodelet src/foam_stitch_nodelet.cpp)
+target_link_libraries(foam_stitch_nodelet ${catkin_LIBRARIES} ${OpenCV_LIBRARIES})
 
 # 安装可执行脚本（可以运行的主程序）
 catkin_install_python(PROGRAMS
