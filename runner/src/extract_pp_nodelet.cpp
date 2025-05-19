@@ -22,19 +22,19 @@ ExtractPPNodelet::~ExtractPPNodelet() {
 void ExtractPPNodelet::onInit() {
   ros::NodeHandle& nh = getMTNodeHandle();
 
-  // 发布器
-  pub_result_      = nh.advertise<sensor_msgs::CompressedImage>(
-      "/panel_detector/result/compressed", 1);
-  pub_light_panel_ = nh.advertise<sensor_msgs::CompressedImage>(
-      "/panel_detector/light_panel/compressed", 1);
-  pub_foam_board_  = nh.advertise<sensor_msgs::CompressedImage>(
-      "/panel_detector/foam_board/compressed", 1);
+  // 原始 Image 发布
+  pub_result_      = nh.advertise<sensor_msgs::Image>(
+      "/panel_detector/result/image_raw", 1);
+  pub_light_panel_ = nh.advertise<sensor_msgs::Image>(
+      "/panel_detector/light_panel/image_raw", 1);
+  pub_foam_board_  = nh.advertise<sensor_msgs::Image>(
+      "/panel_detector/foam_board/image_raw", 1);
 
   // 订阅原始图像
   sub_ = nh.subscribe("/hk_camera/image_raw", 1,
                       &ExtractPPNodelet::imageCb, this);
 
-  // 相机标定
+  // 相机标定参数
   camera_matrix_ = (cv::Mat_<double>(3,3) <<
                         2343.181585, 0.0,         1221.765641,
                     0.0,         2341.245683, 1040.731733,
@@ -45,7 +45,7 @@ void ExtractPPNodelet::onInit() {
   // 启动处理线程
   proc_thread_ = std::thread(&ExtractPPNodelet::processingLoop, this);
 
-  NODELET_INFO("ExtractPPNodelet initialized.");
+  NODELET_INFO("ExtractPPNodelet (raw image) initialized.");
 }
 
 void ExtractPPNodelet::imageCb(const sensor_msgs::ImageConstPtr& msg) {
@@ -69,16 +69,20 @@ void ExtractPPNodelet::processingLoop() {
     }
     if (msg) {
       try {
+        // 零拷贝获取 OpenCV 图
         auto cv_ptr = cv_bridge::toCvShare(msg, "bgr8");
         cv::Mat raw = cv_ptr->image;
 
+        // 第一次初始化畸变映射
         if (!maps_initialized_) {
           initUndistortMaps(raw.size());
         }
 
+        // 去畸变
         cv::Mat undist;
         cv::remap(raw, undist, map1_, map2_, cv::INTER_LINEAR);
 
+        // 核心处理 & 发布
         processImage(undist, msg->header.stamp);
       }
       catch (const std::exception& e) {
@@ -95,12 +99,12 @@ void ExtractPPNodelet::initUndistortMaps(const cv::Size& image_size) {
       camera_matrix_, image_size,
       CV_16SC2, map1_, map2_);
   maps_initialized_ = true;
-  NODELET_INFO("Undistort maps initialized: %dx%d",
+  NODELET_INFO("Undistort maps init: %dx%d",
                image_size.width, image_size.height);
 }
 
 void ExtractPPNodelet::processImage(const cv::Mat& img, const ros::Time& stamp) {
-  // 1. 检测 Light Panel
+  // 1) Light Panel 检测
   cv::Mat light_panel;
   std::vector<cv::Point> panel_box;
   cv::Mat M;
@@ -109,19 +113,19 @@ void ExtractPPNodelet::processImage(const cv::Mat& img, const ros::Time& stamp) 
     cv::putText(res, "Light panel not detected",
                 cv::Point(50,50), cv::FONT_HERSHEY_SIMPLEX,
                 1.0, cv::Scalar(0,0,255), 2);
-    publishCompressed(res, pub_result_, stamp);
+    publishRaw(res, pub_result_, stamp);
     return;
   }
 
-  // 2. 提取 Foam Board
+  // 2) Foam Board 提取
   cv::Mat foam;
   std::vector<cv::Point> foam_box;
   extractFoamBoard(light_panel, foam, foam_box);
 
-  // 3. 反变换 Foam Box 到原图
+  // 3) 反透视变换
   auto foam_box_orig = transformFoamBoxToOriginal(foam_box, M);
 
-  // 4. 在原图上绘制并发布
+  // 4) 绘制并发布所有原始图
   cv::Mat annotated = img.clone();
   cv::drawContours(annotated, std::vector<std::vector<cv::Point>>{panel_box},
                    -1, cv::Scalar(0,255,0), 2);
@@ -136,9 +140,9 @@ void ExtractPPNodelet::processImage(const cv::Mat& img, const ros::Time& stamp) 
               cv::FONT_HERSHEY_SIMPLEX, 0.7,
               cv::Scalar(0,0,255), 2);
 
-  publishCompressed(annotated,   pub_result_,      stamp);
-  publishCompressed(light_panel, pub_light_panel_, stamp);
-  publishCompressed(foam,        pub_foam_board_,  stamp);
+  publishRaw(annotated,   pub_result_,      stamp);
+  publishRaw(light_panel, pub_light_panel_, stamp);
+  publishRaw(foam,        pub_foam_board_,  stamp);
 }
 
 bool ExtractPPNodelet::detectLightPanel(
@@ -170,17 +174,16 @@ bool ExtractPPNodelet::detectLightPanel(
 
   std::vector<cv::Point> contour;
   for (auto& p : *max_it) {
-    contour.emplace_back(
-        cvRound(p.x/scale), cvRound(p.y/scale));
+    contour.emplace_back(cvRound(p.x/scale),
+                         cvRound(p.y/scale));
   }
 
   cv::RotatedRect rect = cv::minAreaRect(contour);
-  cv::Point2f ptsf[4];
-  rect.points(ptsf);
+  cv::Point2f ptsf[4]; rect.points(ptsf);
   std::vector<cv::Point2f> pts(ptsf, ptsf+4);
 
-  int W = cvRound(rect.size.width);
-  int H = cvRound(rect.size.height);
+  int W = cvRound(rect.size.width),
+      H = cvRound(rect.size.height);
   double ar = double(std::max(W,H)) /
               double(std::max(1,std::min(W,H)));
   if (std::abs(ar - 1.0) > 0.3) return false;
@@ -220,7 +223,7 @@ void ExtractPPNodelet::extractFoamBoard(
     std::vector<cv::Point>& out_box)
 {
   int H = panel.rows, W = panel.cols;
-  int fh = H / 2, top = (H - fh) / 2;
+  int fh = H/2, top = (H - fh)/2;
   out_foam = panel(cv::Rect(0, top, W, fh)).clone();
   out_box = {
       {0, top}, {W-1, top},
@@ -244,18 +247,16 @@ std::vector<cv::Point> ExtractPPNodelet::transformFoamBoxToOriginal(
   return out;
 }
 
-void ExtractPPNodelet::publishCompressed(
+void ExtractPPNodelet::publishRaw(
     const cv::Mat& img,
     ros::Publisher& pub,
     const ros::Time& t)
 {
-  std::vector<uchar> buf;
-  cv::imencode(".jpg", img, buf);
-  sensor_msgs::CompressedImage out;
+  cv_bridge::CvImage out;
   out.header.stamp = t;
-  out.format = "jpeg";
-  out.data.assign(buf.begin(), buf.end());
-  pub.publish(out);
+  out.encoding      = "bgr8";
+  out.image         = img;
+  pub.publish(out.toImageMsg());
 }
 
 }  // namespace runner
