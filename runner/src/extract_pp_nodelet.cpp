@@ -55,8 +55,9 @@ void ExtractPPNodelet::onInit() {
 void ExtractPPNodelet::reconfigureCallback(ExtractPPConfig &config, uint32_t) {
   foam_width_ratio_ = config.foam_width_ratio;
   foam_height_ratio_ = config.foam_height_ratio;
-  NODELET_INFO("Reconfigured: foam_width=%.2f foam_height=%.2f",
-               foam_width_ratio_, foam_height_ratio_);
+  box_smoothing_alpha_ = config.box_smoothing_alpha;
+  NODELET_INFO("Reconf: foam_w=%.2f foam_h=%.2f alpha=%.2f", foam_width_ratio_,
+               foam_height_ratio_, box_smoothing_alpha_);
 }
 
 void ExtractPPNodelet::imageCb(const sensor_msgs::ImageConstPtr &msg) {
@@ -122,28 +123,59 @@ void ExtractPPNodelet::processImage(const cv::Mat &img,
     return;
   }
 
+  std::vector<cv::Point2f> panel_box_f(panel_box.begin(), panel_box.end());
+  if (have_prev_panel_box_) {
+    for (size_t i = 0; i < panel_box_f.size(); ++i) {
+      panel_box_f[i] = box_smoothing_alpha_ * prev_panel_box_[i] +
+                       (1.0 - box_smoothing_alpha_) * panel_box_f[i];
+    }
+  } else {
+    have_prev_panel_box_ = true;
+  }
+  prev_panel_box_ = panel_box_f;
+
+  std::vector<cv::Point> panel_box_smooth;
+  for (auto &p : panel_box_f) {
+    panel_box_smooth.emplace_back(cvRound(p.x), cvRound(p.y));
+  }
+
   cv::Mat foam;
   std::vector<cv::Point> foam_box;
   extractFoamBoard(light_panel, foam, foam_box);
 
-  auto foam_box_orig = transformFoamBoxToOriginal(foam_box, M);
+  std::vector<cv::Point> foam_box_orig =
+      transformFoamBoxToOriginal(foam_box, M);
+
+  std::vector<cv::Point2f> foam_box_f(foam_box_orig.begin(),
+                                      foam_box_orig.end());
+  if (have_prev_foam_box_) {
+    for (size_t i = 0; i < foam_box_f.size(); ++i) {
+      foam_box_f[i] = box_smoothing_alpha_ * prev_foam_box_[i] +
+                      (1.0 - box_smoothing_alpha_) * foam_box_f[i];
+    }
+  } else {
+    have_prev_foam_box_ = true;
+  }
+  prev_foam_box_ = foam_box_f;
+  std::vector<cv::Point> foam_box_smooth;
+  for (auto &p : foam_box_f) {
+    foam_box_smooth.emplace_back(cvRound(p.x), cvRound(p.y));
+  }
 
   cv::Mat annotated = img.clone();
-  cv::drawContours(annotated, std::vector<std::vector<cv::Point>>{panel_box},
-                   -1, cv::Scalar(0, 255, 0), 2);
   cv::drawContours(annotated,
-                   std::vector<std::vector<cv::Point>>{foam_box_orig}, -1,
+                   std::vector<std::vector<cv::Point>>{panel_box_smooth}, -1,
+                   cv::Scalar(0, 255, 0), 2);
+  cv::drawContours(annotated,
+                   std::vector<std::vector<cv::Point>>{foam_box_smooth}, -1,
                    cv::Scalar(0, 0, 255), 2);
 
   std::ostringstream oss;
   oss << "FW=" << std::fixed << std::setprecision(2) << foam_width_ratio_
-      << " FH=" << foam_height_ratio_;
+      << " FH=" << std::fixed << std::setprecision(2) << foam_height_ratio_
+      << " alpha=" << std::fixed << std::setprecision(2) << box_smoothing_alpha_;
   cv::putText(annotated, oss.str(), cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX,
               0.8, cv::Scalar(255, 255, 255), 2);
-  cv::putText(annotated, "Light Panel", panel_box[0] - cv::Point(0, 10),
-              cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 255, 0), 2);
-  cv::putText(annotated, "Foam Board", foam_box_orig[0] - cv::Point(0, 10),
-              cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(0, 0, 255), 2);
 
   publishRaw(annotated, pub_result_, stamp);
   publishRaw(light_panel, pub_light_panel_, stamp);

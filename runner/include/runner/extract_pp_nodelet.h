@@ -71,6 +71,12 @@ private:
   double foam_width_ratio_;
   double foam_height_ratio_;
 
+  double box_smoothing_alpha_;
+  bool have_prev_panel_box_{false};
+  std::vector<cv::Point2f> prev_panel_box_;
+  bool have_prev_foam_box_{false};
+  std::vector<cv::Point2f> prev_foam_box_;
+
   // 多线程
   std::thread proc_thread_;
   std::mutex queue_mutex_;
