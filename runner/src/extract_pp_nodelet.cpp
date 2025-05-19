@@ -5,7 +5,7 @@
 namespace runner {
 
 ExtractPPNodelet::ExtractPPNodelet()
-    : maps_initialized_(false), foam_width_ratio_(1.0), foam_height_ratio_(0.5),
+    : maps_initialized_(false), foam_width_ratio_(0.8), foam_height_ratio_(0.5),
       shutdown_(false) {}
 
 ExtractPPNodelet::~ExtractPPNodelet() {
@@ -35,6 +35,14 @@ void ExtractPPNodelet::onInit() {
   pub_foam_board_ = nh.advertise<sensor_msgs::Image>(
       "/panel_detector/foam_board/image_raw", 1);
 
+  pub_small_ =
+      nh.advertise<sensor_msgs::Image>("/panel_detector/debug/small", 1);
+  pub_gray_ = nh.advertise<sensor_msgs::Image>("/panel_detector/debug/gray", 1);
+  pub_thresh_ =
+      nh.advertise<sensor_msgs::Image>("/panel_detector/debug/thresh", 1);
+  pub_contours_ =
+      nh.advertise<sensor_msgs::Image>("/panel_detector/debug/contours", 1);
+
   // 订阅
   sub_ =
       nh.subscribe("/hk_camera/image_raw", 1, &ExtractPPNodelet::imageCb, this);
@@ -56,6 +64,13 @@ void ExtractPPNodelet::reconfigureCallback(ExtractPPConfig &config, uint32_t) {
   foam_width_ratio_ = config.foam_width_ratio;
   foam_height_ratio_ = config.foam_height_ratio;
   box_smoothing_alpha_ = config.box_smoothing_alpha;
+  scale_        = config.scale;
+  blur_size_    = config.blur_size;
+  use_otsu_     = config.use_otsu;
+  thresh_value_ = config.thresh_value;
+  area_thresh_  = config.area_thresh;
+  ar_tol_       = config.ar_tol;
+
   NODELET_INFO("Reconf: foam_w=%.2f foam_h=%.2f alpha=%.2f", foam_width_ratio_,
                foam_height_ratio_, box_smoothing_alpha_);
 }
@@ -173,7 +188,8 @@ void ExtractPPNodelet::processImage(const cv::Mat &img,
   std::ostringstream oss;
   oss << "FW=" << std::fixed << std::setprecision(2) << foam_width_ratio_
       << " FH=" << std::fixed << std::setprecision(2) << foam_height_ratio_
-      << " alpha=" << std::fixed << std::setprecision(2) << box_smoothing_alpha_;
+      << " alpha=" << std::fixed << std::setprecision(2)
+      << box_smoothing_alpha_;
   cv::putText(annotated, oss.str(), cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX,
               0.8, cv::Scalar(255, 255, 255), 2);
 
@@ -185,40 +201,70 @@ void ExtractPPNodelet::processImage(const cv::Mat &img,
 bool ExtractPPNodelet::detectLightPanel(const cv::Mat &img, cv::Mat &out_warped,
                                         std::vector<cv::Point> &out_box,
                                         cv::Mat &out_M) {
-  double scale = 0.5;
-  cv::Mat small, gray, blur, thresh;
-  cv::resize(img, small, cv::Size(), scale, scale);
-  cv::cvtColor(small, gray, cv::COLOR_BGR2GRAY);
-  cv::GaussianBlur(gray, blur, cv::Size(5, 5), 0);
-  cv::threshold(blur, thresh, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
+  // 1) 缩放
+  cv::Mat small;
+  cv::resize(img, small, cv::Size(), scale_, scale_);
+  publishRaw(small, pub_small_, ros::Time::now());
 
+  // 2) 灰度
+  cv::Mat gray;
+  cv::cvtColor(small, gray, cv::COLOR_BGR2GRAY);
+  publishMono(gray, pub_gray_, ros::Time::now());
+
+  // 3) 模糊
+  int k = int(blur_size_) | 1; // 确保是奇数
+  cv::GaussianBlur(gray, gray, cv::Size(k, k), 0);
+
+  // 4) 二值化
+  cv::Mat thresh;
+  if (use_otsu_) {
+    cv::threshold(gray, thresh, 0, 255, cv::THRESH_BINARY | cv::THRESH_OTSU);
+  } else {
+    cv::threshold(gray, thresh, thresh_value_, 255, cv::THRESH_BINARY);
+  }
+  publishMono(thresh, pub_thresh_, ros::Time::now());
+
+  // 5) 轮廓检测
   std::vector<std::vector<cv::Point>> ctrs;
   cv::findContours(thresh, ctrs, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
   if (ctrs.empty())
     return false;
 
+  // 找最大轮廓并过滤面积
   auto max_it =
       std::max_element(ctrs.begin(), ctrs.end(), [](auto &a, auto &b) {
         return cv::contourArea(a) < cv::contourArea(b);
       });
-  if (cv::contourArea(*max_it) < 300)
+  double area = cv::contourArea(*max_it) / (scale_ * scale_);
+  if (area < area_thresh_)
     return false;
 
+  // 6) 恢复到原尺寸
   std::vector<cv::Point> contour;
+  contour.reserve(max_it->size());
   for (auto &p : *max_it) {
-    contour.emplace_back(cvRound(p.x / scale), cvRound(p.y / scale));
+    contour.emplace_back(cvRound(p.x / scale_), cvRound(p.y / scale_));
   }
 
+  // 7) 最小外接矩形
   cv::RotatedRect rect = cv::minAreaRect(contour);
-  cv::Point2f ptsf[4];
-  rect.points(ptsf);
-  std::vector<cv::Point2f> pts(ptsf, ptsf + 4);
 
+  // 根据平滑后参数判断长宽比
   int W = cvRound(rect.size.width), H = cvRound(rect.size.height);
   double ar = double(std::max(W, H)) / double(std::max(1, std::min(W, H)));
-  if (std::abs(ar - 1.0) > 0.3)
+  if (std::abs(ar - 1.0) > ar_tol_)
     return false;
 
+  // 8) 将矩形画到 debug 图上
+  cv::Mat dbg = img.clone();
+  cv::Point2f ptsf[4];
+  rect.points(ptsf);
+  for (int i = 0; i < 4; ++i)
+    cv::line(dbg, ptsf[i], ptsf[(i + 1) % 4], cv::Scalar(0, 0, 255), 2);
+  publishRaw(dbg, pub_contours_, ros::Time::now());
+
+  // 9) 角点排序 & 透视变换
+  std::vector<cv::Point2f> pts(ptsf, ptsf + 4);
   std::sort(pts.begin(), pts.end(), [](auto &a, auto &b) { return a.y < b.y; });
   std::vector<cv::Point2f> top(pts.begin(), pts.begin() + 2),
       bot(pts.begin() + 2, pts.end());
@@ -227,9 +273,8 @@ bool ExtractPPNodelet::detectLightPanel(const cv::Mat &img, cv::Mat &out_warped,
 
   std::vector<cv::Point2f> src = {top[0], top[1], bot[0], bot[1]};
   out_box.clear();
-  for (auto &p : src) {
+  for (auto &p : src)
     out_box.emplace_back(cvRound(p.x), cvRound(p.y));
-  }
 
   int dstSize = std::max(W, H);
   std::vector<cv::Point2f> dst = {{0, 0},
@@ -282,6 +327,19 @@ void ExtractPPNodelet::publishRaw(const cv::Mat &img, ros::Publisher &pub,
   out.header.stamp = t;
   out.encoding = "bgr8";
   out.image = img;
+  pub.publish(out.toImageMsg());
+}
+
+void ExtractPPNodelet::publishMono(
+    const cv::Mat& img,
+    ros::Publisher& pub,
+    const ros::Time& t)
+{
+  // 单通道图像用 mono8
+  cv_bridge::CvImage out;
+  out.header.stamp = t;
+  out.encoding    = "mono8";
+  out.image       = img;
   pub.publish(out.toImageMsg());
 }
 

@@ -51,6 +51,7 @@ private:
 
   // 发布原始 Image
   void publishRaw(const cv::Mat &img, ros::Publisher &pub, const ros::Time &t);
+  void publishMono(const cv::Mat &img, ros::Publisher &pub, const ros::Time &t);
 
   // ROS 接口
   ros::Subscriber sub_;
@@ -82,6 +83,13 @@ private:
   std::mutex queue_mutex_;
   std::queue<sensor_msgs::ImageConstPtr> image_queue_;
   bool shutdown_;
+
+  // dynamic parameters
+  double scale_, blur_size_, thresh_value_, area_thresh_, ar_tol_;
+  bool use_otsu_;
+
+  // debug publishers
+  ros::Publisher pub_small_, pub_gray_, pub_thresh_, pub_contours_;
 };
 
 } // namespace runner
