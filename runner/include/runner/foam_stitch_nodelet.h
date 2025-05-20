@@ -23,7 +23,7 @@ private:
   void publishPanorama(const ros::Time& stamp);
 
   ros::Subscriber sub_;
-  ros::Publisher   pub_, debug_raw_pub_;
+  ros::Publisher   pub_, debug_raw_pub_, debug_stitched_pub_;
   std::shared_ptr<dynamic_reconfigure::Server<FoamStitchConfig>> dr_srv_;
 
   cv::Mat panorama_, last_img_;

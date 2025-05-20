@@ -17,10 +17,11 @@ void FoamStitchNodelet::onInit() {
       boost::bind(&FoamStitchNodelet::reconfigureCallback, this, _1, _2)
   );
 
-  sub_ = nh.subscribe("/panel_detector/foam_board/image_raw", 1,
+  sub_               = nh.subscribe("/panel_detector/foam_board/image_raw", 1,
                       &FoamStitchNodelet::imageCb, this);
-  pub_           = nh.advertise<sensor_msgs::Image>("/panel_detector/foam_board/stitched", 1);
-  debug_raw_pub_ = nh.advertise<sensor_msgs::Image> ("/foam_stitch/debug_raw", 1);
+  pub_               = nh.advertise<sensor_msgs::Image>("/panel_detector/foam_board/stitched", 1);
+  debug_raw_pub_     = nh.advertise<sensor_msgs::Image>("/foam_stitch/debug_raw", 1);
+  debug_stitched_pub_= nh.advertise<sensor_msgs::Image>("/foam_stitch/debug_stitched", 1);
 
   NODELET_INFO("FoamStitchNodelet initialized");
 }
@@ -54,6 +55,7 @@ void FoamStitchNodelet::imageCb(const sensor_msgs::ImageConstPtr& msg) {
 
   std::lock_guard<std::mutex> lock(pano_mutex_);
 
+  // 首帧或重置
   if (auto_reset_ || panorama_.empty() || last_img_.empty()) {
     panorama_ = img.clone();
     last_img_ = img.clone();
@@ -61,10 +63,9 @@ void FoamStitchNodelet::imageCb(const sensor_msgs::ImageConstPtr& msg) {
     return;
   }
 
+  // 尺寸对齐
   if (img.size() != last_img_.size()) {
-    NODELET_WARN("Image size mismatch (%dx%d vs %dx%d), resizing to first frame size",
-                 img.cols, img.rows,
-                 last_img_.cols, last_img_.rows);
+    NODELET_WARN("Image size mismatch, resizing to first frame size");
     cv::resize(img, img, last_img_.size());
   }
 
@@ -77,20 +78,58 @@ void FoamStitchNodelet::imageCb(const sensor_msgs::ImageConstPtr& msg) {
   cv::Point2d shift = cv::phaseCorrelate(g0, g1);
   int dx = static_cast<int>(std::round(shift.x));
 
+  // 过滤偏移范围
   if (std::abs(dx) < min_shift_ || std::abs(dx) > max_shift_) {
     last_img_ = img.clone();
     return;
   }
 
-  int start_x = std::max(0, dx);
-  int new_w   = img.cols - start_x;
-  if (new_w > 0) {
-    cv::Mat strip = img(cv::Rect(start_x, 0, new_w, img.rows)).clone();
-    cv::hconcat(panorama_, strip, panorama_);
-    if (panorama_.cols > max_width_) {
-      int off = panorama_.cols - max_width_;
-      panorama_ = panorama_(cv::Rect(off, 0, max_width_, panorama_.rows)).clone();
+  // 计算新增区域宽度和位置
+  int add_w = std::abs(dx);
+  if (add_w > 0 && add_w < img.cols) {
+    cv::Mat strip;
+    // dx > 0: current image moved right => new region on left
+    if (dx > 0) {
+      strip = img(cv::Rect(0, 0, add_w, img.rows)).clone();
+      cv::hconcat(strip, panorama_, panorama_);
+    } else {
+      // dx < 0: current image moved left => new region on right
+      strip = img(cv::Rect(img.cols - add_w, 0, add_w, img.rows)).clone();
+      cv::hconcat(panorama_, strip, panorama_);
     }
+    // 裁剪超过最大宽度
+    if (panorama_.cols > max_width_) {
+      panorama_ = panorama_(cv::Rect(panorama_.cols - max_width_, 0,
+                                     max_width_, panorama_.rows)).clone();
+    }
+
+    // 可视化：红框=新增，绿框=当前窗口
+    cv::Mat vis = panorama_.clone();
+    int h = vis.rows;
+    if (dx > 0) {
+      // 新增在左
+      cv::rectangle(vis,
+                    cv::Point(0, 0),
+                    cv::Point(add_w - 1, h - 1),
+                    cv::Scalar(0,0,255), 2);
+      cv::rectangle(vis,
+                    cv::Point(vis.cols - img.cols, 0),
+                    cv::Point(vis.cols - 1, h - 1),
+                    cv::Scalar(0,255,0), 2);
+    } else {
+      // 新增在右
+      cv::rectangle(vis,
+                    cv::Point(vis.cols - add_w, 0),
+                    cv::Point(vis.cols - 1, h - 1),
+                    cv::Scalar(0,0,255), 2);
+      cv::rectangle(vis,
+                    cv::Point(0, 0),
+                    cv::Point(img.cols - 1, h - 1),
+                    cv::Scalar(0,255,0), 2);
+    }
+    cv_bridge::CvImage dbg(msg->header, "bgr8", vis);
+    debug_stitched_pub_.publish(dbg.toImageMsg());
+
     publishPanorama(msg->header.stamp);
   }
 
