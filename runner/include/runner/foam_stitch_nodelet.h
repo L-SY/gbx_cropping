@@ -24,27 +24,15 @@ private:
   void publishPanorama(const ros::Time& stamp);
 
   ros::Subscriber sub_;
-  ros::Publisher pub_;
+  ros::Publisher   pub_, debug_raw_pub_;
 
   std::shared_ptr<dynamic_reconfigure::Server<FoamStitchConfig>> dr_srv_;
 
-  std::string input_topic_, output_topic_;
-
-  cv::Mat panorama_;
-  cv::Mat last_roi_;
+  cv::Mat panorama_, last_img_;
   std::mutex pano_mutex_;
 
-  // parameters
+  int min_shift_, max_shift_, max_width_;
   bool auto_reset_;
-  double scale_, area_thresh_, ar_tol_;
-  int blur_size_, min_shift_, max_shift_, max_width_;
-
-  // foam_stitch_nodelet.h
-  ros::Publisher debug_raw_pub_;
-  ros::Publisher debug_gray_pub_;
-  ros::Publisher debug_bin_pub_;
-  ros::Publisher debug_roi_pub_;
-
 };
 
 } // namespace runner
