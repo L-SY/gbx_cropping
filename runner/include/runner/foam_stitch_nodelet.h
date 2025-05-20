@@ -1,5 +1,4 @@
 #pragma once
-
 #include <nodelet/nodelet.h>
 #include <ros/ros.h>
 #include <sensor_msgs/Image.h>
@@ -25,13 +24,12 @@ private:
 
   ros::Subscriber sub_;
   ros::Publisher   pub_, debug_raw_pub_;
-
   std::shared_ptr<dynamic_reconfigure::Server<FoamStitchConfig>> dr_srv_;
 
   cv::Mat panorama_, last_img_;
   std::mutex pano_mutex_;
 
-  int min_shift_, max_shift_, max_width_;
+  int  min_shift_, max_shift_, max_width_;
   bool auto_reset_;
 };
 

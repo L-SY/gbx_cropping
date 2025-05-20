@@ -12,7 +12,6 @@ void FoamStitchNodelet::onInit() {
   ros::NodeHandle nh  = getMTNodeHandle();
   ros::NodeHandle pnh = getMTPrivateNodeHandle();
 
-  // dynamic_reconfigure
   dr_srv_.reset(new dynamic_reconfigure::Server<FoamStitchConfig>(pnh));
   dr_srv_->setCallback(
       boost::bind(&FoamStitchNodelet::reconfigureCallback, this, _1, _2)
@@ -20,21 +19,20 @@ void FoamStitchNodelet::onInit() {
 
   sub_ = nh.subscribe("/panel_detector/foam_board/image_raw", 1,
                       &FoamStitchNodelet::imageCb, this);
-  pub_            = nh.advertise<sensor_msgs::Image>("/panel_detector/foam_board/stitched", 1);
-  debug_raw_pub_  = nh.advertise<sensor_msgs::Image> ("/foam_stitch/debug_raw", 1);
+  pub_           = nh.advertise<sensor_msgs::Image>("/panel_detector/foam_board/stitched", 1);
+  debug_raw_pub_ = nh.advertise<sensor_msgs::Image> ("/foam_stitch/debug_raw", 1);
 
   NODELET_INFO("FoamStitchNodelet initialized");
 }
 
 void FoamStitchNodelet::reconfigureCallback(FoamStitchConfig& cfg, uint32_t) {
   std::lock_guard<std::mutex> lock(pano_mutex_);
-  min_shift_   = cfg.min_shift;
-  max_shift_   = cfg.max_shift;
-  max_width_   = cfg.max_width;
-  auto_reset_  = cfg.auto_reset;
+  min_shift_  = cfg.min_shift;
+  max_shift_  = cfg.max_shift;
+  max_width_  = cfg.max_width;
+  auto_reset_ = cfg.auto_reset;
   if (cfg.reset_now) {
-    resetPanorama();
-    last_img_.release();
+    resetPanorama(); last_img_.release();
     NODELET_INFO("Panorama and history reset");
   }
 }
@@ -44,13 +42,11 @@ void FoamStitchNodelet::resetPanorama() {
 }
 
 void FoamStitchNodelet::imageCb(const sensor_msgs::ImageConstPtr& msg) {
-  // 转 CvImage 并发布原始图
   cv_bridge::CvImageConstPtr cv_ptr;
   try {
     cv_ptr = cv_bridge::toCvShare(msg, "bgr8");
   } catch (cv_bridge::Exception& e) {
-    NODELET_ERROR("cv_bridge exception: %s", e.what());
-    return;
+    NODELET_ERROR("cv_bridge exception: %s", e.what()); return;
   }
   cv::Mat img = cv_ptr->image;
   if (img.empty()) return;
@@ -58,12 +54,18 @@ void FoamStitchNodelet::imageCb(const sensor_msgs::ImageConstPtr& msg) {
 
   std::lock_guard<std::mutex> lock(pano_mutex_);
 
-  // 首帧或重置
   if (auto_reset_ || panorama_.empty() || last_img_.empty()) {
     panorama_ = img.clone();
     last_img_ = img.clone();
     publishPanorama(msg->header.stamp);
     return;
+  }
+
+  if (img.size() != last_img_.size()) {
+    NODELET_WARN("Image size mismatch (%dx%d vs %dx%d), resizing to first frame size",
+                 img.cols, img.rows,
+                 last_img_.cols, last_img_.rows);
+    cv::resize(img, img, last_img_.size());
   }
 
   // 相位相关计算水平位移 dx
@@ -73,15 +75,13 @@ void FoamStitchNodelet::imageCb(const sensor_msgs::ImageConstPtr& msg) {
   g0.convertTo(g0, CV_32F);
   g1.convertTo(g1, CV_32F);
   cv::Point2d shift = cv::phaseCorrelate(g0, g1);
-  int dx = int(std::round(shift.x));
+  int dx = static_cast<int>(std::round(shift.x));
 
-  // 过滤噪声偏移
   if (std::abs(dx) < min_shift_ || std::abs(dx) > max_shift_) {
     last_img_ = img.clone();
     return;
   }
 
-  // 提取新增区域并拼接
   int start_x = std::max(0, dx);
   int new_w   = img.cols - start_x;
   if (new_w > 0) {
