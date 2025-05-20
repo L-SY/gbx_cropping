@@ -6,7 +6,7 @@
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
 #include <dynamic_reconfigure/server.h>
-#include <runner/FoamStitchConfig.h>  // 由 dynamic_reconfigure 生成
+#include <runner/FoamStitchConfig.h>
 #include <mutex>
 
 namespace runner {
@@ -17,36 +17,34 @@ public:
   ~FoamStitchNodelet() override;
 
 private:
-  // Nodelet 接口
   void onInit() override;
-
-  // 订阅回调
   void imageCb(const sensor_msgs::ImageConstPtr& msg);
-
-  // dynamic_reconfigure 回调
   void reconfigureCallback(FoamStitchConfig& cfg, uint32_t level);
-
-  // 清空当前拼接
   void resetPanorama();
-
-  // 发布当前拼接图
   void publishPanorama(const ros::Time& stamp);
 
-  // ROS 接口
-  ros::Subscriber                            sub_;
-  ros::Publisher                             pub_;
+  ros::Subscriber sub_;
+  ros::Publisher pub_;
 
-  // dynamic_reconfigure server
   std::shared_ptr<dynamic_reconfigure::Server<FoamStitchConfig>> dr_srv_;
 
-  std::string output_topic_;
+  std::string input_topic_, output_topic_;
 
   cv::Mat panorama_;
-  cv::Mat last_foam_;
+  cv::Mat last_roi_;
   std::mutex pano_mutex_;
-  bool    auto_reset_;
-  int     min_shift_, max_shift_, max_width_;
+
+  // parameters
+  bool auto_reset_;
+  double scale_, area_thresh_, ar_tol_;
+  int blur_size_, min_shift_, max_shift_, max_width_;
+
+  // foam_stitch_nodelet.h
+  ros::Publisher debug_raw_pub_;
+  ros::Publisher debug_gray_pub_;
+  ros::Publisher debug_bin_pub_;
+  ros::Publisher debug_roi_pub_;
 
 };
 
-}  // namespace runner
+} // namespace runner
