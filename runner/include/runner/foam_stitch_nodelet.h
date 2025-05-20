@@ -24,6 +24,8 @@ private:
 
   ros::Subscriber sub_;
   ros::Publisher   pub_, debug_raw_pub_, debug_stitched_pub_;
+  ros::Publisher debug_match_pub_;
+  ros::Publisher debug_gray_prev_pub_, debug_gray_cur_pub_;
   std::shared_ptr<dynamic_reconfigure::Server<FoamStitchConfig>> dr_srv_;
 
   cv::Mat panorama_, last_img_;

@@ -22,6 +22,9 @@ void FoamStitchNodelet::onInit() {
   pub_               = nh.advertise<sensor_msgs::Image>("/panel_detector/foam_board/stitched", 1);
   debug_raw_pub_     = nh.advertise<sensor_msgs::Image>("/foam_stitch/debug_raw", 1);
   debug_stitched_pub_= nh.advertise<sensor_msgs::Image>("/foam_stitch/debug_stitched", 1);
+  debug_match_pub_ = nh.advertise<sensor_msgs::Image>("/foam_stitch/debug_matches", 1);
+  debug_gray_prev_pub_ = nh.advertise<sensor_msgs::Image>("/foam_stitch/debug_gray_prev", 1);
+  debug_gray_cur_pub_  = nh.advertise<sensor_msgs::Image>("/foam_stitch/debug_gray_cur",  1);
 
   NODELET_INFO("FoamStitchNodelet initialized");
 }
@@ -42,21 +45,27 @@ void FoamStitchNodelet::resetPanorama() {
   panorama_.release();
 }
 
+// Updated FoamStitchNodelet::imageCb with additional debug logging
 void FoamStitchNodelet::imageCb(const sensor_msgs::ImageConstPtr& msg) {
   cv_bridge::CvImageConstPtr cv_ptr;
   try {
     cv_ptr = cv_bridge::toCvShare(msg, "bgr8");
   } catch (cv_bridge::Exception& e) {
-    NODELET_ERROR("cv_bridge exception: %s", e.what()); return;
+    NODELET_ERROR("cv_bridge exception: %s", e.what());
+    return;
   }
   cv::Mat img = cv_ptr->image;
-  if (img.empty()) return;
+  if (img.empty()) {
+    NODELET_WARN("Received empty image");
+    return;
+  }
   debug_raw_pub_.publish(cv_ptr->toImageMsg());
 
   std::lock_guard<std::mutex> lock(pano_mutex_);
 
   // 首帧或重置
   if (auto_reset_ || panorama_.empty() || last_img_.empty()) {
+    NODELET_INFO("Initializing panorama with first frame");
     panorama_ = img.clone();
     last_img_ = img.clone();
     publishPanorama(msg->header.stamp);
@@ -65,27 +74,108 @@ void FoamStitchNodelet::imageCb(const sensor_msgs::ImageConstPtr& msg) {
 
   // 尺寸对齐
   if (img.size() != last_img_.size()) {
-    NODELET_WARN("Image size mismatch, resizing to first frame size");
+    NODELET_WARN("Image size mismatch (%dx%d vs %dx%d), resizing to first frame size",
+                 img.cols, img.rows,
+                 last_img_.cols, last_img_.rows);
     cv::resize(img, img, last_img_.size());
   }
 
-  // 相位相关计算水平位移 dx
-  cv::Mat g0, g1;
-  cv::cvtColor(last_img_, g0, cv::COLOR_BGR2GRAY);
-  cv::cvtColor(img,      g1, cv::COLOR_BGR2GRAY);
-  g0.convertTo(g0, CV_32F);
-  g1.convertTo(g1, CV_32F);
-  cv::Point2d shift = cv::phaseCorrelate(g0, g1);
-  int dx = static_cast<int>(std::round(shift.x));
+  // 转灰度
+  cv::Mat gray_prev, gray_cur;
+  cv::cvtColor(last_img_, gray_prev, cv::COLOR_BGR2GRAY);
+  cv::cvtColor(img,       gray_cur,  cv::COLOR_BGR2GRAY);
 
-  // 过滤偏移范围
-  if (std::abs(dx) < min_shift_ || std::abs(dx) > max_shift_) {
+  cv::equalizeHist(gray_prev, gray_prev);
+  cv::equalizeHist(gray_cur,  gray_cur);
+
+  debug_gray_prev_pub_.publish(cv_bridge::CvImage(msg->header, "mono8", gray_prev).toImageMsg());
+  debug_gray_cur_pub_ .publish(cv_bridge::CvImage(msg->header, "mono8", gray_cur ).toImageMsg());
+  // ORB 特征检测与描述子
+  static auto orb = cv::ORB::create(1000);
+  std::vector<cv::KeyPoint> kp_prev, kp_cur;
+  cv::Mat des_prev, des_cur;
+  orb->detectAndCompute(gray_prev, cv::noArray(), kp_prev, des_prev);
+  orb->detectAndCompute(gray_cur,  cv::noArray(), kp_cur,  des_cur);
+  NODELET_INFO("ORB detected %zu keypoints in previous, %zu in current frame",
+               kp_prev.size(), kp_cur.size());
+
+  if (des_prev.empty() || des_cur.empty()) {
+    NODELET_WARN("No descriptors found (des_prev empty: %d, des_cur empty: %d)",
+                 des_prev.empty(), des_cur.empty());
     last_img_ = img.clone();
     return;
   }
 
-  // 计算新增区域宽度和位置
-  int add_w = std::abs(dx);
+  // BFMatcher KNN + Lowe 筛选
+  cv::BFMatcher matcher(cv::NORM_HAMMING);
+  std::vector<std::vector<cv::DMatch>> knn_matches;
+  matcher.knnMatch(des_prev, des_cur, knn_matches, 2);
+  size_t total_knn = knn_matches.size();
+  NODELET_INFO("KNN found %zu raw matches", total_knn);
+
+  std::vector<cv::DMatch> good_matches;
+  for (auto &m : knn_matches) {
+    if (m.size() == 2 && m[0].distance < 0.75f * m[1].distance)
+      good_matches.push_back(m[0]);
+  }
+  NODELET_INFO("Filtered to %zu good matches", good_matches.size());
+
+  // 可视化匹配: 前50条
+  cv::Mat vis_matches;
+  int num_show = std::min<int>(good_matches.size(), 50);
+  if (num_show > 0) {
+    cv::drawMatches(
+        last_img_, kp_prev,
+        img,       kp_cur,
+        std::vector<cv::DMatch>(good_matches.begin(), good_matches.begin()+num_show),
+        vis_matches,
+        cv::Scalar::all(-1), cv::Scalar::all(-1),
+        std::vector<char>(), cv::DrawMatchesFlags::NOT_DRAW_SINGLE_POINTS);
+    debug_match_pub_.publish(cv_bridge::CvImage(msg->header, "bgr8", vis_matches).toImageMsg());
+    NODELET_INFO("Published %d match visualizations", num_show);
+  } else {
+    NODELET_WARN("No good matches to visualize");
+  }
+
+  // 用 RANSAC 根据匹配点估计平移
+  double dx = 0;
+  if (good_matches.size() >= 4) {
+    std::vector<cv::Point2f> pts_prev, pts_cur;
+    for (auto &m : good_matches) {
+      pts_prev.push_back(kp_prev[m.queryIdx].pt);
+      pts_cur .push_back(kp_cur [m.trainIdx].pt);
+    }
+    cv::Mat inliers;
+    cv::Mat H = cv::estimateAffinePartial2D(
+        pts_prev, pts_cur, inliers,
+        cv::RANSAC, 3.0);
+    if (!H.empty()) {
+      dx = H.at<double>(0,2);
+      NODELET_INFO("Estimated dx = %.2f (inliers: %zu/%zu)",
+                   dx,
+                   cv::countNonZero(inliers), inliers.rows);
+    } else {
+      NODELET_ERROR("estimateAffinePartial2D failed: returned empty matrix");
+      last_img_ = img.clone();
+      return;
+    }
+  } else {
+    NODELET_WARN("Not enough good matches (%zu) for RANSAC, need >=4", good_matches.size());
+    last_img_ = img.clone();
+    return;
+  }
+
+  // 四舍五入并过滤无效偏移
+  int idx = static_cast<int>(std::round(dx));
+  NODELET_INFO("Rounded dx to %d", idx);
+  if (std::abs(idx) < min_shift_ || std::abs(idx) > max_shift_) {
+    NODELET_WARN("dx %d out of valid range [%d, %d]", idx, min_shift_, max_shift_);
+    last_img_ = img.clone();
+    return;
+  }
+
+  // 拼接逻辑
+  int add_w = std::abs(idx);
   if (add_w > 0 && add_w < img.cols) {
     cv::Mat strip;
     // dx > 0: current image moved right => new region on left
@@ -99,6 +189,8 @@ void FoamStitchNodelet::imageCb(const sensor_msgs::ImageConstPtr& msg) {
     }
     // 裁剪超过最大宽度
     if (panorama_.cols > max_width_) {
+      int off = panorama_.cols - max_width_;
+      panorama_ = panorama_(cv::Rect(off, 0, max_width_, panorama_.rows)).clone();
       panorama_ = panorama_(cv::Rect(panorama_.cols - max_width_, 0,
                                      max_width_, panorama_.rows)).clone();
     }
