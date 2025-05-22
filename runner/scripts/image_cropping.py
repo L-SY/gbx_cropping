@@ -4,7 +4,28 @@ import os
 from PIL import Image, ImageDraw, ImageFont
 import math
 
-def image_cropping(image_path, output_folder, actual_width_cm=10, crop_size_cm=5, start_from_left=False):
+class InnerBlackBorderAdder(object):
+    def __init__(self, border_percentage=0.05):
+        self.border_percentage = border_percentage
+
+    def __call__(self, img):
+        width, height = img.size
+        bordered_img = img.copy()
+        draw = ImageDraw.Draw(bordered_img)
+
+        # 根据图片尺寸计算边框宽度
+        border_width_h = int(width * self.border_percentage)  # 水平边框宽度
+        border_width_v = int(height * self.border_percentage)  # 垂直边框宽度
+
+        # 绘制四个边的黑色边框
+        draw.rectangle([(0, 0), (width, border_width_v)], fill="black")  # 上边
+        draw.rectangle([(0, height - border_width_v), (width, height)], fill="black")  # 下边
+        draw.rectangle([(0, 0), (border_width_h, height)], fill="black")  # 左边
+        draw.rectangle([(width - border_width_h, 0), (width, height)], fill="black")  # 右边
+
+        return bordered_img
+
+def image_cropping(image_path, output_folder, actual_width_cm=10, crop_size_cm=5, start_from_left=False, add_border=True, border_percentage=0.05):
     """
     图片裁切工具
 
@@ -14,6 +35,8 @@ def image_cropping(image_path, output_folder, actual_width_cm=10, crop_size_cm=5
     - actual_width_cm: 图片实际宽度(厘米)
     - crop_size_cm: 每个裁切区域的大小(厘米)
     - start_from_left: 是否从左边开始裁切区域 (True: 从图片左边开始裁切, False: 从图片右边开始裁切)
+    - add_border: 是否为每个裁切图片添加内边框 (True: 添加, False: 不添加)
+    - border_percentage: 内边框宽度百分比 (0.05 = 5%)
     """
 
     # 创建输出文件夹
@@ -101,6 +124,11 @@ def image_cropping(image_path, output_folder, actual_width_cm=10, crop_size_cm=5
     print(f"可裁切区域: {rows} 行 x {cols} 列 = {rows * cols} 个区域")
     print(f"裁切起始位置: {'从图片左边开始' if start_from_left else '从图片右边开始'}")
     print(f"编号顺序: 从右上开始向左")
+    print(f"内边框处理: {'添加' if add_border else '不添加'}{f' (宽度{border_percentage*100:.1f}%)' if add_border else ''}")
+
+    # 创建边框处理器
+    if add_border:
+        border_adder = InnerBlackBorderAdder(border_percentage)
 
     # 创建标号图
     labeled_image = image.copy()
@@ -114,6 +142,7 @@ def image_cropping(image_path, output_folder, actual_width_cm=10, crop_size_cm=5
 
     # 裁切图片并编号
     cropped_images = []
+    processed_crops = []  # 存储处理后的裁切图片用于重组
 
     for row in range(rows):
         for col in range(cols):
@@ -131,13 +160,48 @@ def image_cropping(image_path, output_folder, actual_width_cm=10, crop_size_cm=5
             numbering_col = cols - 1 - col
             crop_number = row * cols + numbering_col + 1
 
+            # 生成文件名
+            crop_filename = f"crop_{crop_number:03d}.jpg"
+
             # 裁切图片
             cropped = image[y1:y2, x1:x2]
 
-            # 保存裁切的图片
-            crop_filename = f"crop_{crop_number:03d}.jpg"
-            crop_path = os.path.join(output_folder, crop_filename)
-            cv2.imwrite(crop_path, cropped)
+            # 处理裁切的图片（添加内边框）
+            if add_border:
+                # 将OpenCV图片转换为PIL格式
+                cropped_rgb = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
+                pil_img = Image.fromarray(cropped_rgb)
+
+                # 添加内边框
+                bordered_img = border_adder(pil_img)
+
+                # 转换回OpenCV格式保存
+                bordered_array = np.array(bordered_img)
+                bordered_cv = cv2.cvtColor(bordered_array, cv2.COLOR_RGB2BGR)
+
+                # 保存带边框的图片
+                crop_path = os.path.join(output_folder, crop_filename)
+                cv2.imwrite(crop_path, bordered_cv)
+
+                # 存储处理后的图片用于重组
+                processed_crops.append({
+                    'image': bordered_cv,
+                    'row': row,
+                    'col': col,
+                    'number': crop_number
+                })
+            else:
+                # 直接保存原始裁切图片
+                crop_path = os.path.join(output_folder, crop_filename)
+                cv2.imwrite(crop_path, cropped)
+
+                # 存储原始裁切图片用于重组
+                processed_crops.append({
+                    'image': cropped,
+                    'row': row,
+                    'col': col,
+                    'number': crop_number
+                })
 
             # 在标号图上绘制边框和编号
             cv2.rectangle(labeled_image, (x1, y1), (x2, y2), (0, 255, 0), 3)
@@ -176,6 +240,12 @@ def image_cropping(image_path, output_folder, actual_width_cm=10, crop_size_cm=5
     labeled_image_path = os.path.join(output_folder, "labeled_image.jpg")
     cv2.imwrite(labeled_image_path, labeled_image)
 
+    # 生成由裁切图片重组的完整图像
+    print("正在生成重组完整图像...")
+    reassembled_image = create_reassembled_image(processed_crops, rows, cols, crop_size_pixels)
+    reassembled_path = os.path.join(output_folder, "reassembled_image.jpg")
+    cv2.imwrite(reassembled_path, reassembled_image)
+
     # 生成信息文件
     info_file = os.path.join(output_folder, "crop_info.txt")
     with open(info_file, 'w', encoding='utf-8') as f:
@@ -193,7 +263,8 @@ def image_cropping(image_path, output_folder, actual_width_cm=10, crop_size_cm=5
         f.write(f"排列方式: {rows} 行 x {cols} 列\n")
         f.write(f"裁切起始位置: {'从图片左边开始' if start_from_left else '从图片右边开始'}\n")
         f.write(f"剩余像素位置: {'右边' if start_from_left else '左边'}\n")
-        f.write(f"编号顺序: 从右上开始向左\n\n")
+        f.write(f"编号顺序: 从右上开始向左\n")
+        f.write(f"内边框处理: {'添加' if add_border else '不添加'}{f' (宽度{border_percentage*100:.1f}%)' if add_border else ''}\n\n")
 
         f.write("裁切详情:\n")
         f.write("-" * 50 + "\n")
@@ -206,8 +277,41 @@ def image_cropping(image_path, output_folder, actual_width_cm=10, crop_size_cm=5
     print(f"\n裁切完成!")
     print(f"总共生成 {len(cropped_images)} 个裁切图片")
     print(f"标号图保存为: {labeled_image_path}")
+    print(f"重组图保存为: {reassembled_path}")
     print(f"详细信息保存为: {info_file}")
     print(f"所有文件保存在: {output_folder}")
+
+def create_reassembled_image(processed_crops, rows, cols, crop_size_pixels):
+    """
+    根据裁切的图片重新组装成完整图像
+    """
+    # 创建空白画布
+    canvas_height = rows * crop_size_pixels
+    canvas_width = cols * crop_size_pixels
+    canvas = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
+
+    # 按位置放置每个裁切图片
+    for crop_data in processed_crops:
+        crop_img = crop_data['image']
+        row = crop_data['row']
+        col = crop_data['col']
+
+        # 计算在画布上的位置
+        y1 = row * crop_size_pixels
+        x1 = col * crop_size_pixels
+        y2 = y1 + crop_img.shape[0]
+        x2 = x1 + crop_img.shape[1]
+
+        # 确保不超出画布边界
+        y2 = min(y2, canvas_height)
+        x2 = min(x2, canvas_width)
+        crop_h = y2 - y1
+        crop_w = x2 - x1
+
+        # 将裁切图片放置到画布上
+        canvas[y1:y2, x1:x2] = crop_img[:crop_h, :crop_w]
+
+    return canvas
 
 # 使用示例
 if __name__ == "__main__":
@@ -221,7 +325,9 @@ if __name__ == "__main__":
         output_folder=output_directory,
         actual_width_cm=10,     # 图片实际宽度10厘米
         crop_size_cm=5,         # 每个区域5x5厘米
-        start_from_left=False   # True: 从左开始, False: 从右开始
+        start_from_left=False,  # True: 从左开始, False: 从右开始
+        add_border=True,        # 是否添加内边框
+        border_percentage=0.12  # 内边框宽度百分比 (5%)
     )
 
     print("\n使用说明:")
@@ -230,4 +336,8 @@ if __name__ == "__main__":
     print("3. 设置 start_from_left 参数:")
     print("   - False: 从图片右边开始裁切，剩余像素留在左边")
     print("   - True: 从图片左边开始裁切，剩余像素留在右边")
-    print("4. 运行脚本即可完成裁切")
+    print("4. 设置 add_border 参数:")
+    print("   - True: 为每个裁切图片添加黑色内边框")
+    print("   - False: 不添加边框")
+    print("5. 设置 border_percentage 参数: 内边框宽度百分比 (0.05 = 5%)")
+    print("6. 运行脚本即可完成裁切并生成重组图像")
