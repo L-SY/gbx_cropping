@@ -3,6 +3,10 @@ import numpy as np
 import os
 from PIL import Image, ImageDraw, ImageFont
 import math
+import torch
+import torch.nn as nn
+from torchvision import models, transforms
+import argparse
 
 class InnerBlackBorderAdder(object):
     def __init__(self, border_percentage=0.05):
@@ -25,7 +29,63 @@ class InnerBlackBorderAdder(object):
 
         return bordered_img
 
-def image_cropping(image_path, output_folder, actual_width_cm=10, crop_size_cm=5, start_from_left=False, add_border=True, border_percentage=0.05):
+# 模型定义函数
+def get_model(model_name: str, dropout_rate: float, freeze_backbone: bool = False):
+    """
+    获取预训练模型并修改最后一层用于回归任务
+    """
+    model_name = model_name.lower()
+    model_func = getattr(models, model_name, None)
+    if model_func is None:
+        raise ValueError(f"Unsupported model: {model_name}")
+
+    model = model_func(weights=None)
+
+    # 冻结backbone参数
+    if freeze_backbone:
+        for param in model.parameters():
+            param.requires_grad = False
+
+    # 修改最后一层
+    if 'densenet' in model_name:
+        in_features = model.classifier.in_features
+        model.classifier = nn.Sequential(
+            nn.Linear(in_features, 256),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(256, 1)
+        )
+    else:
+        in_features = model.fc.in_features
+        model.fc = nn.Sequential(
+            nn.Linear(in_features, 256),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(256, 1)
+        )
+
+    return model
+
+def predict_density(model, image_path, transform, device):
+    """
+    对单张图片进行密度预测
+    """
+    try:
+        image = Image.open(image_path).convert('RGB')
+        image_tensor = transform(image).unsqueeze(0).to(device)
+
+        with torch.no_grad():
+            model.eval()
+            prediction = model(image_tensor).item()
+
+        return prediction
+    except Exception as e:
+        print(f"预测图片 {image_path} 时出错: {e}")
+        return None
+
+def image_cropping(image_path, output_folder, actual_width_cm=10, crop_size_cm=5, start_from_left=False,
+                   add_border=True, border_percentage=0.05, model_path=None, model_name='resnet50',
+                   dropout_rate=0.5, freeze_backbone=False, image_size=224):
     """
     图片裁切工具
 
@@ -37,6 +97,11 @@ def image_cropping(image_path, output_folder, actual_width_cm=10, crop_size_cm=5
     - start_from_left: 是否从左边开始裁切区域 (True: 从图片左边开始裁切, False: 从图片右边开始裁切)
     - add_border: 是否为每个裁切图片添加内边框 (True: 添加, False: 不添加)
     - border_percentage: 内边框宽度百分比 (0.05 = 5%)
+    - model_path: 预训练模型路径 (如果提供则进行密度预测)
+    - model_name: 模型名称 (resnet50, densenet121等)
+    - dropout_rate: Dropout率
+    - freeze_backbone: 是否冻结backbone
+    - image_size: 模型输入图片尺寸
     """
 
     # 创建输出文件夹
@@ -126,6 +191,31 @@ def image_cropping(image_path, output_folder, actual_width_cm=10, crop_size_cm=5
     print(f"编号顺序: 从右上开始向左")
     print(f"内边框处理: {'添加' if add_border else '不添加'}{f' (宽度{border_percentage*100:.1f}%)' if add_border else ''}")
 
+    # 初始化模型和预处理
+    model = None
+    transform = None
+    device = None
+
+    if model_path and os.path.exists(model_path):
+        print(f"加载模型: {model_path}")
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"使用设备: {device}")
+
+        # 创建模型
+        model = get_model(model_name, dropout_rate, freeze_backbone).to(device)
+        model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
+
+        # 创建图像预处理
+        transform = transforms.Compose([
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                 std=[0.229, 0.224, 0.225])
+        ])
+        print("模型加载成功，将进行密度预测")
+    else:
+        print("未提供模型路径或模型文件不存在，跳过密度预测")
+
     # 创建边框处理器
     if add_border:
         border_adder = InnerBlackBorderAdder(border_percentage)
@@ -188,7 +278,8 @@ def image_cropping(image_path, output_folder, actual_width_cm=10, crop_size_cm=5
                     'image': bordered_cv,
                     'row': row,
                     'col': col,
-                    'number': crop_number
+                    'number': crop_number,
+                    'filename': crop_filename
                 })
             else:
                 # 直接保存原始裁切图片
@@ -200,8 +291,19 @@ def image_cropping(image_path, output_folder, actual_width_cm=10, crop_size_cm=5
                     'image': cropped,
                     'row': row,
                     'col': col,
-                    'number': crop_number
+                    'number': crop_number,
+                    'filename': crop_filename
                 })
+
+            # 进行密度预测
+            prediction = None
+            if model is not None:
+                prediction = predict_density(model, crop_path, transform, device)
+                if prediction is not None:
+                    print(f"图片 {crop_filename} 预测密度: {prediction:.2f}")
+
+            # 更新processed_crops中的预测结果
+            processed_crops[-1]['prediction'] = prediction
 
             # 在标号图上绘制边框和编号
             cv2.rectangle(labeled_image, (x1, y1), (x2, y2), (0, 255, 0), 3)
@@ -233,7 +335,8 @@ def image_cropping(image_path, output_folder, actual_width_cm=10, crop_size_cm=5
                 'number': crop_number,
                 'position': (row, col),
                 'coordinates': (x1, y1, x2, y2),
-                'filename': crop_filename
+                'filename': crop_filename,
+                'prediction': prediction
             })
 
     # 保存标号图
@@ -272,7 +375,10 @@ def image_cropping(image_path, output_folder, actual_width_cm=10, crop_size_cm=5
             f.write(f"编号 {crop_info['number']:3d}: {crop_info['filename']} ")
             f.write(f"位置({crop_info['position'][0]+1}, {crop_info['position'][1]+1}) ")
             f.write(f"坐标({crop_info['coordinates'][0]}, {crop_info['coordinates'][1]}, ")
-            f.write(f"{crop_info['coordinates'][2]}, {crop_info['coordinates'][3]})\n")
+            f.write(f"{crop_info['coordinates'][2]}, {crop_info['coordinates'][3]}) ")
+            if crop_info['prediction'] is not None:
+                f.write(f"预测密度: {crop_info['prediction']:.2f}")
+            f.write("\n")
 
     print(f"\n裁切完成!")
     print(f"总共生成 {len(cropped_images)} 个裁切图片")
@@ -283,7 +389,7 @@ def image_cropping(image_path, output_folder, actual_width_cm=10, crop_size_cm=5
 
 def create_reassembled_image(processed_crops, rows, cols, crop_size_pixels):
     """
-    根据裁切的图片重新组装成完整图像
+    根据裁切的图片重新组装成完整图像，并添加编号和预测结果
     """
     # 创建空白画布
     canvas_height = rows * crop_size_pixels
@@ -295,6 +401,8 @@ def create_reassembled_image(processed_crops, rows, cols, crop_size_pixels):
         crop_img = crop_data['image']
         row = crop_data['row']
         col = crop_data['col']
+        number = crop_data['number']
+        prediction = crop_data.get('prediction', None)
 
         # 计算在画布上的位置
         y1 = row * crop_size_pixels
@@ -311,6 +419,45 @@ def create_reassembled_image(processed_crops, rows, cols, crop_size_pixels):
         # 将裁切图片放置到画布上
         canvas[y1:y2, x1:x2] = crop_img[:crop_h, :crop_w]
 
+        # 添加文字标注（编号和预测结果）
+        # 转换为PIL图像以便添加文字
+        canvas_pil = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(canvas_pil)
+
+        try:
+            font_size = max(16, crop_size_pixels // 15)
+            font = ImageFont.truetype("arial.ttf", font_size)
+        except:
+            font = ImageFont.load_default()
+
+        # 准备文字内容
+        text_lines = [f"#{number}"]
+        if prediction is not None:
+            text_lines.append(f"density: {prediction:.1f}")
+
+        # 计算文字位置（左上角）
+        text_x = x1 + 5
+        text_y = y1 + 5
+
+        # 绘制文字背景和文字
+        for i, text in enumerate(text_lines):
+            current_y = text_y + i * (font_size + 2)
+
+            # 获取文字边界框
+            bbox = draw.textbbox((text_x, current_y), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+
+            # 绘制半透明背景
+            draw.rectangle([text_x-2, current_y-2, text_x+text_width+2, current_y+text_height+2],
+                           fill=(0, 0, 0, 180))
+
+            # 绘制文字
+            draw.text((text_x, current_y), text, fill=(255, 255, 255), font=font)
+
+        # 转换回OpenCV格式
+        canvas = cv2.cvtColor(np.array(canvas_pil), cv2.COLOR_RGB2BGR)
+
     return canvas
 
 # 使用示例
@@ -323,21 +470,32 @@ if __name__ == "__main__":
     image_cropping(
         image_path=input_image_path,
         output_folder=output_directory,
-        actual_width_cm=10,     # 图片实际宽度10厘米
-        crop_size_cm=5,         # 每个区域5x5厘米
-        start_from_left=False,  # True: 从左开始, False: 从右开始
-        add_border=True,        # 是否添加内边框
-        border_percentage=0.12  # 内边框宽度百分比 (5%)
+        actual_width_cm=10,         # 图片实际宽度10厘米
+        crop_size_cm=5,             # 每个区域5x5厘米
+        start_from_left=False,      # True: 从左开始, False: 从右开始
+        add_border=True,            # 是否添加内边框
+        border_percentage=0.12,     # 内边框宽度百分比 (5%)
+        model_path="/home/lsy/gbx_cropping_ws/src/paper/output/densenet201_run_20250508_095647/best_model.pth",            # 模型路径，如果需要预测请设置
+        model_name='densenet201',      # 模型名称
+        dropout_rate=0.5,           # Dropout率
+        freeze_backbone=False,      # 是否冻结backbone
+        image_size=224              # 模型输入图片尺寸
     )
 
-    print("\n使用说明:")
-    print("1. 修改 input_image_path 为你的图片路径")
-    print("2. 修改 output_directory 为输出文件夹路径")
-    print("3. 设置 start_from_left 参数:")
-    print("   - False: 从图片右边开始裁切，剩余像素留在左边")
-    print("   - True: 从图片左边开始裁切，剩余像素留在右边")
-    print("4. 设置 add_border 参数:")
-    print("   - True: 为每个裁切图片添加黑色内边框")
-    print("   - False: 不添加边框")
-    print("5. 设置 border_percentage 参数: 内边框宽度百分比 (0.05 = 5%)")
-    print("6. 运行脚本即可完成裁切并生成重组图像")
+    # print("\n使用说明:")
+    # print("1. 修改 input_image_path 为你的图片路径")
+    # print("2. 修改 output_directory 为输出文件夹路径")
+    # print("3. 设置 start_from_left 参数:")
+    # print("   - False: 从图片右边开始裁切，剩余像素留在左边")
+    # print("   - True: 从图片左边开始裁切，剩余像素留在右边")
+    # print("4. 设置 add_border 参数:")
+    # print("   - True: 为每个裁切图片添加黑色内边框")
+    # print("   - False: 不添加边框")
+    # print("5. 设置 border_percentage 参数: 内边框宽度百分比 (0.05 = 5%)")
+    # print("6. 如需密度预测，请设置以下参数:")
+    # print("   - model_path: 训练好的模型文件路径 (.pth)")
+    # print("   - model_name: 模型架构名称 (resnet50, densenet121等)")
+    # print("   - dropout_rate: Dropout率")
+    # print("   - freeze_backbone: 是否冻结backbone权重")
+    # print("   - image_size: 模型输入图片尺寸")
+    # print("7. 运行脚本即可完成裁切并生成带预测结果的重组图像")
