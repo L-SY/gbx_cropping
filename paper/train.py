@@ -270,6 +270,8 @@ def main():
     parser.add_argument('--min_lr', type=float, default=1e-6)
     parser.add_argument('--dropout', type=float, default=0.3)
     parser.add_argument('--freeze', action='store_true', help='Freeze backbone weights (default: False)')
+    parser.add_argument('--image_size', type=int, default=224, help='Resize image to this size (default: 224)')
+
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -283,9 +285,13 @@ def main():
     best_model_path = os.path.join(model_save_dir, 'best_model.pth')
 
     transform = transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.Grayscale(num_output_channels=3),
+        transforms.Resize((args.image_size, args.image_size)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        transforms.Normalize(
+            mean=[0.220116, 0.220116, 0.220116],
+            std=[0.178257, 0.178257, 0.178257]
+        )
     ])
 
     train_dataset = MPPDataset(os.path.join(args.data_dir, 'train/train_labels.csv'),

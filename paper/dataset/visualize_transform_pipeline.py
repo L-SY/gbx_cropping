@@ -25,13 +25,13 @@ def visualize_transform_pipeline(image_path, output_path=None):
     img = InnerBlackBorderAdder(border_width=70)(img)
     steps.append(("Black Border", img))
 
-    # 边缘增强
-    img = AdaptiveEdgeEnhancer(p=1.0)(img)
-    steps.append(("Edge Enhanced", img))
-
-    # 对比度增强
-    img = ContrastTextureEnhancer(p=1.0)(img)
-    steps.append(("Contrast Enhanced", img))
+    # # 边缘增强
+    # img = AdaptiveEdgeEnhancer(p=1.0)(img)
+    # steps.append(("Edge Enhanced", img))
+    #
+    # # 对比度增强
+    # img = ContrastTextureEnhancer(p=1.0)(img)
+    # steps.append(("Contrast Enhanced", img))
 
     # Resize + ToTensor + Normalize (不用于显示，但可选)
     transform_final = transforms.Compose([

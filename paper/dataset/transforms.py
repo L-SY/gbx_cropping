@@ -98,21 +98,20 @@ def get_training_transform(border_width=70):
     return transforms.Compose([
         FixedRotation(p=0.75),
         InnerBlackBorderAdder(border_width=border_width),
-        transforms.Resize((224, 224)),
         transforms.ToTensor()
     ])
-
+#         transforms.Resize((224, 224)),
+#         AdaptiveEdgeEnhancer(p=1.0),
+#         ContrastTextureEnhancer(p=1.0),
 def get_validation_transform(border_width=70):
     return transforms.Compose([
         FixedRotation(p=0.75),
         InnerBlackBorderAdder(border_width=border_width),
-        transforms.Resize((224, 224)),
         transforms.ToTensor(),
     ])
 
 def get_inference_transform(border_width=70):
     return transforms.Compose([
         InnerBlackBorderAdder(border_width=border_width),
-        transforms.Resize((224, 224)),
         transforms.ToTensor(),
     ])

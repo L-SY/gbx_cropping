@@ -145,16 +145,20 @@ if __name__ == '__main__':
     parser.add_argument('--model', type=str, default='resnet50', help='Model name (resnet50, densenet121, etc.)')
     parser.add_argument('--dropout', type=float, default=0.5, help='Dropout rate')
     parser.add_argument('--freeze', action='store_true', help='Freeze backbone weights (default: False)')
+    parser.add_argument('--image_size', type=int, default=224, help='Resize image to this size (default: 224)')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
     transform = transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.Grayscale(num_output_channels=3),
+        transforms.Resize((args.image_size, args.image_size)),
         transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225])
+        transforms.Normalize(
+            mean=[0.220116, 0.220116, 0.220116],
+            std=[0.178257, 0.178257, 0.178257]
+        )
     ])
 
     test_dataset = MPPDataset(os.path.join(args.data_dir, 'test/test_labels.csv'),
