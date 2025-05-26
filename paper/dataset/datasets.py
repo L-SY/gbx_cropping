@@ -223,9 +223,9 @@ class DatasetAugmenter:
         from transforms import get_training_transform, get_validation_transform
         self.augmentation_factor = augmentation_factor
         if is_training:
-            self.transform = get_training_transform(border_width=70)
+            self.transform = get_training_transform(border_percentage=0.1)
         else:
-            self.transform = get_validation_transform(border_width=70)
+            self.transform = get_validation_transform(border_percentage=0.1)
 
     def augment_dataset(self, source_dir, target_dir, is_training=True):
         os.makedirs(target_dir, exist_ok=True)
