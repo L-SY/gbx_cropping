@@ -1,0 +1,26 @@
+图片预测结果
+==================================================
+输入文件夹: /home/lsy/gbx_cropping_ws/src/runner/scripts/v1tov2
+处理图片数量: 8
+网格布局: 3 行 x 3 列
+模型: resnet50
+设备: cuda
+
+详细结果:
+--------------------------------------------------
+  1. aug0_cropped_secondbatch_cropped_raw_5.jpg 密度:    15.46
+  2. aug1_cropped_secondbatch_cropped_raw_5.jpg 密度:    15.49
+  3. aug2_cropped_secondbatch_cropped_raw_5.jpg 密度:    15.47
+  4. aug3_cropped_secondbatch_cropped_raw_5.jpg 密度:    15.39
+  5. aug4_cropped_secondbatch_cropped_raw_5.jpg 密度:    15.49
+  6. inference.png                  密度:    14.28
+  7. inference_no_pp_around.png     密度:    13.81
+  8. train.png                      密度:    15.45
+
+统计信息:
+------------------------------
+有效预测数量: 8
+平均密度: 15.11
+最大密度: 15.49
+最小密度: 13.81
+标准差: 0.62
