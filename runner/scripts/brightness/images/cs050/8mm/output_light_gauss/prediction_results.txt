@@ -1,0 +1,25 @@
+图片预测结果
+==================================================
+输入文件夹: /home/lsy/gbx_cropping_ws/src/runner/scripts/brightness/images/cs050/8mm/cropping
+处理图片数量: 7
+网格布局: 3 行 x 3 列
+模型: resnet50
+设备: cuda
+
+详细结果:
+--------------------------------------------------
+  1. brightness_0.2.png             倍率:    18.28
+  2. brightness_0.4.png             倍率:    16.16
+  3. brightness_0.6.png             倍率:    14.09
+  4. brightness_0.8.png             倍率:    14.25
+  5. brightness_1.png               倍率:    13.73
+  6. gamma_output.png               倍率:    14.90
+  7. train.png                      倍率:    15.25
+
+统计信息:
+------------------------------
+有效预测数量: 7
+平均倍率: 15.24
+最大倍率: 18.28
+最小倍率: 13.73
+标准差: 1.45

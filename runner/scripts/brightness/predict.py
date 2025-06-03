@@ -1,12 +1,12 @@
 import cv2
 import numpy as np
 import os
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 import math
 import torch
 import torch.nn as nn
 from torchvision import models, transforms
-import argparse
+import torchvision.transforms.functional as F
 from pathlib import Path
 
 class InnerBlackBorderAdder(object):
@@ -27,6 +27,13 @@ class InnerBlackBorderAdder(object):
         draw.rectangle([(width - border_width_h, 0), (width, height)], fill="black")
 
         return bordered_img
+
+# Gamma correction for numpy/CV images
+def gamma_correction_cv2(img: np.ndarray, gamma: float) -> np.ndarray:
+    # build lookup table
+    table = np.array([((i / 255.0) ** gamma) * 255 for i in range(256)], dtype="uint8")
+    return cv2.LUT(img, table)
+
 
 def get_model(model_name: str, dropout_rate: float, freeze_backbone: bool = False):
     model_name = model_name.lower()
@@ -59,6 +66,7 @@ def get_model(model_name: str, dropout_rate: float, freeze_backbone: bool = Fals
 
     return model
 
+
 def predict_density(model, image_path, transform, device):
     try:
         image = Image.open(image_path).convert('RGB')
@@ -72,6 +80,7 @@ def predict_density(model, image_path, transform, device):
     except Exception as e:
         print(f"预测图片 {image_path} 时出错: {e}")
         return None
+
 
 def get_supported_image_files(folder_path):
     supported_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
@@ -89,6 +98,7 @@ def get_supported_image_files(folder_path):
     image_files.sort(key=lambda x: x.name)
     return image_files
 
+
 def calculate_grid_size(num_images):
     if num_images == 0:
         return 0, 0
@@ -98,6 +108,7 @@ def calculate_grid_size(num_images):
     rows = math.ceil(num_images / cols)
 
     return rows, cols
+
 
 def create_assembled_image(processed_images, target_size, padding, rows, cols):
     canvas_width = cols * target_size + (cols - 1) * padding
@@ -114,11 +125,13 @@ def create_assembled_image(processed_images, target_size, padding, rows, cols):
 
     return canvas
 
+
 def folder_prediction_and_assembly(input_folder, output_folder, model_path,
                                    model_name='resnet50', dropout_rate=0.5,
                                    freeze_backbone=False, image_size=224,
                                    target_size=300, add_border=True,
-                                   border_percentage=0.05, padding=10):
+                                   border_percentage=0.05, padding=10,
+                                   gamma=2.0):
 
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
@@ -141,10 +154,12 @@ def folder_prediction_and_assembly(input_folder, output_folder, model_path,
     model = get_model(model_name, dropout_rate, freeze_backbone).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
 
+    # 包含 gamma 矫正的 transform
     transform = transforms.Compose([
         InnerBlackBorderAdder(border_percentage),
         transforms.Grayscale(num_output_channels=3),
         transforms.Resize((image_size, image_size)),
+        transforms.Lambda(lambda img: F.adjust_gamma(img, gamma)),
         transforms.ToTensor(),
         transforms.Normalize(
             mean=[0.220116, 0.220116, 0.220116],
@@ -152,13 +167,11 @@ def folder_prediction_and_assembly(input_folder, output_folder, model_path,
         )
     ])
 
-    if add_border:
-        border_adder = InnerBlackBorderAdder(border_percentage)
-
     visual_transform = transforms.Compose([
         InnerBlackBorderAdder(border_percentage),
         transforms.Grayscale(num_output_channels=3),
         transforms.Resize((target_size, target_size)),
+        transforms.Lambda(lambda img: F.adjust_gamma(img, gamma)),
     ])
 
     prediction_results = []
@@ -174,7 +187,6 @@ def folder_prediction_and_assembly(input_folder, output_folder, model_path,
             original_resized = pil_image.resize((target_size, target_size), Image.Resampling.LANCZOS)
 
             transformed_image = visual_transform(pil_image.copy())
-
             transformed_resized = transformed_image
 
             prediction = predict_density(model, image_path, transform, device)
@@ -199,7 +211,7 @@ def folder_prediction_and_assembly(input_folder, output_folder, model_path,
             if prediction is not None:
                 print(f"  预测倍率: {prediction:.2f}")
             else:
-                print(f"  预测失败")
+                print("  预测失败")
 
         except Exception as e:
             print(f"处理图片 {image_path.name} 时出错: {e}")
@@ -217,15 +229,20 @@ def folder_prediction_and_assembly(input_folder, output_folder, model_path,
     original_canvas = create_assembled_image(original_images, target_size, padding, rows, cols)
     transformed_canvas = create_assembled_image(transformed_images, target_size, padding, rows, cols)
 
+    # gamma 矫正拼接后的画布
+    original_canvas_bgr = cv2.cvtColor(original_canvas, cv2.COLOR_RGB2BGR)
+    original_canvas_bgr = gamma_correction_cv2(original_canvas_bgr, gamma)
+
+    transformed_canvas_bgr = cv2.cvtColor(transformed_canvas, cv2.COLOR_RGB2BGR)
+    transformed_canvas_bgr = gamma_correction_cv2(transformed_canvas_bgr, gamma)
+
     original_output_path = os.path.join(output_folder, "assembled_original.jpg")
     transformed_output_path = os.path.join(output_folder, "assembled_transformed.jpg")
-
-    original_canvas_bgr = cv2.cvtColor(original_canvas, cv2.COLOR_RGB2BGR)
-    transformed_canvas_bgr = cv2.cvtColor(transformed_canvas, cv2.COLOR_RGB2BGR)
 
     cv2.imwrite(original_output_path, original_canvas_bgr)
     cv2.imwrite(transformed_output_path, transformed_canvas_bgr)
 
+    # 保存预测结果文本
     results_file = os.path.join(output_folder, "prediction_results.txt")
     with open(results_file, 'w', encoding='utf-8') as f:
         f.write("图片预测结果\n")
@@ -266,10 +283,11 @@ def folder_prediction_and_assembly(input_folder, output_folder, model_path,
         valid_predictions = [r['prediction'] for r in prediction_results if r['prediction'] is not None]
         print(f"平均预测倍率: {np.mean(valid_predictions):.2f}")
 
+
 if __name__ == "__main__":
-    input_folder_path = "/home/lsy/gbx_cropping_ws/src/runner/scripts/brightness/images/cs050/12mm/cropping"
-    output_directory = "/home/lsy/gbx_cropping_ws/src/runner/scripts/brightness/images/cs050/12mm/output"
-    model_file_path = "/home/lsy/gbx_cropping_ws/src/runner/scripts/v1tov2/best_model.pth"
+    input_folder_path = "/home/lsy/gbx_cropping_ws/src/runner/scripts/brightness/images/cs020/12mm/cropping"
+    output_directory = "/home/lsy/gbx_cropping_ws/src/runner/scripts/brightness/images/cs020/12mm/output_light_gauss_gamma"
+    model_file_path = "/home/lsy/gbx_cropping_ws/src/paper/output/resnet50_run_20250526_light_guass/best_model.pth"
 
     folder_prediction_and_assembly(
         input_folder=input_folder_path,
@@ -282,7 +300,8 @@ if __name__ == "__main__":
         target_size=300,
         add_border=True,
         border_percentage=0.1,
-        padding=10
+        padding=10,
+        gamma=1.
     )
 
     print("\n使用说明:")
