@@ -351,7 +351,7 @@ if __name__ == "__main__":
     # 请修改以下路径
     input_folder_path = "/runner/scripts/test/brightness/images/cs020/12mm/cropping"  # 输入图片文件夹路径
     output_directory = "/home/lsy/gbx_cropping_ws/src/runner/scripts/brightness/images/cs020/12mm/output"        # 输出文件夹路径
-    model_file_path = "/home/lsy/gbx_cropping_ws/src/runner/scripts/v1tov2/best_model.pth"        # 模型文件路径
+    model_file_path = "/runner/scripts/test/v1tov2/best_model.pth"  # 模型文件路径
 
     # 执行预测和拼接
     folder_prediction_and_assembly(
