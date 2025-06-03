@@ -45,9 +45,8 @@ catkin_install_python(PROGRAMS
         scripts/photo_capture.py
         scripts/photo_stick.py
         scripts/model_evaluation.py
-        scripts/model_ros_runner.py
-        scripts/pure/extract_pp_nodelet.py
-        scripts/pure/ros_high_undistort_extract_pp.py
+        scripts/try/pure/extract_pp_nodelet.py
+        scripts/try/pure/ros_high_undistort_extract_pp.py
         scripts/test1.py
         DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
