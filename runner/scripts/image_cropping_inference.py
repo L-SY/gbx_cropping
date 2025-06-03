@@ -207,10 +207,13 @@ def image_cropping(image_path, output_folder, actual_width_cm=10, crop_size_cm=5
 
         # 创建图像预处理
         transform = transforms.Compose([
+            transforms.Grayscale(num_output_channels=3),
             transforms.Resize((image_size, image_size)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                 std=[0.229, 0.224, 0.225])
+            transforms.Normalize(
+                mean=[0.220116, 0.220116, 0.220116],
+                std=[0.178257, 0.178257, 0.178257]
+            )
         ])
         print("模型加载成功，将进行密度预测")
     else:
@@ -463,8 +466,8 @@ def create_reassembled_image(processed_crops, rows, cols, crop_size_pixels):
 # 使用示例
 if __name__ == "__main__":
     # 请修改以下路径
-    input_image_path = "/home/lsy/gbx_cropping_ws/src/runner/scripts/image_sticked.png"  # 输入图片路径
-    output_directory = "cropped_images"   # 输出文件夹
+    input_image_path = "/home/lsy/gbx_cropping_ws/src/runner/scripts/four_test/image.jpg"  # 输入图片路径
+    output_directory = "/home/lsy/gbx_cropping_ws/src/runner/scripts/four_test/cropping"   # 输出文件夹
 
     # 执行裁切
     image_cropping(
@@ -474,9 +477,9 @@ if __name__ == "__main__":
         crop_size_cm=5,             # 每个区域5x5厘米
         start_from_left=False,      # True: 从左开始, False: 从右开始
         add_border=True,            # 是否添加内边框
-        border_percentage=0.12,     # 内边框宽度百分比 (5%)
-        model_path="/home/lsy/gbx_cropping_ws/src/paper/output/densenet201_run_20250508_095647/best_model.pth",            # 模型路径，如果需要预测请设置
-        model_name='densenet201',      # 模型名称
+        border_percentage=0.1,     # 内边框宽度百分比 (5%)
+        model_path="/home/lsy/gbx_cropping_ws/src/paper/output/resnet50_change_gray_mean_std/best_model.pth",            # 模型路径，如果需要预测请设置
+        model_name='resnet50',      # 模型名称
         dropout_rate=0.5,           # Dropout率
         freeze_backbone=False,      # 是否冻结backbone
         image_size=224              # 模型输入图片尺寸
