@@ -285,9 +285,9 @@ def folder_prediction_and_assembly(input_folder, output_folder, model_path,
 
 
 if __name__ == "__main__":
-    input_folder_path = "/home/lsy/gbx_cropping_ws/src/runner/scripts/brightness/images/cs020/12mm/cropping"
+    input_folder_path = "/runner/scripts/test/brightness/images/cs020/12mm/cropping"
     output_directory = "/home/lsy/gbx_cropping_ws/src/runner/scripts/brightness/images/cs020/12mm/output_light_gauss_gamma"
-    model_file_path = "/home/lsy/gbx_cropping_ws/src/paper/output/resnet50_run_20250526_light_guass/best_model.pth"
+    model_file_path = "/paper/output/resnet50_run_20250526_light_guass/best_model.pth"
 
     folder_prediction_and_assembly(
         input_folder=input_folder_path,
