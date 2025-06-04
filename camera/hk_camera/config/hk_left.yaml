@@ -1,17 +1,17 @@
-image_width: 1440
-image_height: 1080
+image_width: 1624
+image_height: 1240
 camera_name: hk_left
 camera_matrix:
   rows: 3
   cols: 3
-  data: [1793.45495,    0.     ,  761.63528,
-            0.     , 1791.83362,  551.58477,
-            0.     ,    0.     ,    1.     ]
+  data: [2704.22352,    0.     ,  804.45448,
+         0.     , 2705.83341,  632.84738,
+         0.     ,    0.     ,    1.     ]
 distortion_model: plumb_bob
 distortion_coefficients:
   rows: 1
   cols: 5
-  data: [-0.079407, 0.113988, -0.000268, -0.000251, 0.000000]
+  data: [-0.041045, 0.184679, 0.000457, -0.000592, 0.000000]
 rectification_matrix:
   rows: 3
   cols: 3
@@ -21,6 +21,6 @@ rectification_matrix:
 projection_matrix:
   rows: 3
   cols: 4
-  data: [1774.34851,    0.     ,  761.46581,    0.     ,
-            0.     , 1778.79749,  551.0661 ,    0.     ,
-            0.     ,    0.     ,    1.     ,    0.     ]
+  data: [2699.02472,    0.     ,  803.95464,    0.     ,
+         0.     , 2701.32666,  633.07342,    0.     ,
+         0.     ,    0.     ,    1.     ,    0.     ]
