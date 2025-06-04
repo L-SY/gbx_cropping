@@ -427,49 +427,56 @@ void HKCameraNodelet::reconfigCB(CameraConfig& config, uint32_t level)
 
   // Black level
   // Can not be used!
-//  assert(MV_CC_SetEnumValue(dev_handle_, "BalanceWhiteAuto", MV_BALANCEWHITE_AUTO_OFF) == MV_OK);
-//  switch (config.white_selector)
-//  {
-//    case 0:
-//      assert(MV_CC_SetEnumValue(dev_handle_, "BalanceRatioSelector", 0) == MV_OK);
-//      break;
-//    case 1:
-//      assert(MV_CC_SetEnumValue(dev_handle_, "BalanceRatioSelector", 1) == MV_OK);
-//      break;
-//    case 2:
-//      assert(MV_CC_SetEnumValue(dev_handle_, "BalanceRatioSelector", 2) == MV_OK);
-//      break;
-//  }
+  assert(MV_CC_SetEnumValue(dev_handle_, "BalanceWhiteAuto", MV_BALANCEWHITE_AUTO_OFF) == MV_OK);
+  switch (config.white_selector)
+  {
+    case 0:
+      assert(MV_CC_SetEnumValue(dev_handle_, "BalanceRatioSelector", 0) == MV_OK);
+      break;
+    case 1:
+      assert(MV_CC_SetEnumValue(dev_handle_, "BalanceRatioSelector", 1) == MV_OK);
+      break;
+    case 2:
+      assert(MV_CC_SetEnumValue(dev_handle_, "BalanceRatioSelector", 2) == MV_OK);
+      break;
+  }
 
   _MVCC_INTVALUE_T white_value;
-//  if (config.white_auto)
-//  {
-//    assert(MV_CC_SetEnumValue(dev_handle_, "BalanceWhiteAuto", MV_BALANCEWHITE_AUTO_CONTINUOUS) == MV_OK);
-//    assert(MV_CC_GetIntValue(dev_handle_, "BalanceRatio", &white_value) == MV_OK);
-//    config.white_value = white_value.nCurValue;
-//  }
-//  else
-//  {
-//    assert(MV_CC_SetEnumValue(dev_handle_, "BalanceWhiteAuto", MV_BALANCEWHITE_AUTO_OFF) == MV_OK);
-//    assert(MV_CC_GetIntValue(dev_handle_, "BalanceRatio", &white_value) == MV_OK);
-//    config.white_value = white_value.nCurValue;
-//  }
+  if (config.white_auto)
+  {
+    assert(MV_CC_SetEnumValue(dev_handle_, "BalanceWhiteAuto", MV_BALANCEWHITE_AUTO_CONTINUOUS) == MV_OK);
+    assert(MV_CC_GetIntValue(dev_handle_, "BalanceRatio", &white_value) == MV_OK);
+    config.white_value = white_value.nCurValue;
+  }
+  else
+  {
+    assert(MV_CC_SetEnumValue(dev_handle_, "BalanceWhiteAuto", MV_BALANCEWHITE_AUTO_OFF) == MV_OK);
+    assert(MV_CC_GetIntValue(dev_handle_, "BalanceRatio", &white_value) == MV_OK);
+    config.white_value = white_value.nCurValue;
+  }
 
-//  switch (config.gamma_selector)
-//  {
-//    case 0:
-//      assert(MV_CC_SetBoolValue(dev_handle_, "GammaEnable", true) == MV_OK);
-//      assert(MV_CC_SetEnumValue(dev_handle_, "GammaSelector", MV_GAMMA_SELECTOR_SRGB) == MV_OK);
-//      break;
-//    case 1:
-//      assert(MV_CC_SetBoolValue(dev_handle_, "GammaEnable", true) == MV_OK);
-//      assert(MV_CC_SetEnumValue(dev_handle_, "GammaSelector", MV_GAMMA_SELECTOR_USER) == MV_OK);
-//      assert(MV_CC_SetGamma(dev_handle_, config.gamma_value) == MV_OK);
-//      break;
-//    case 2:
-//      assert(MV_CC_SetBoolValue(dev_handle_, "GammaEnable", false) == MV_OK);
-//      break;
-//  }
+  switch (config.gamma_selector)
+  {
+    case 0:
+      assert(MV_CC_SetBoolValue(dev_handle_, "GammaEnable", true) == MV_OK);
+      assert(MV_CC_SetEnumValue(dev_handle_, "GammaSelector", MV_GAMMA_SELECTOR_SRGB) == MV_OK);
+      break;
+    case 1:
+      assert(MV_CC_SetBoolValue(dev_handle_, "GammaEnable", true) == MV_OK);
+      assert(MV_CC_SetEnumValue(dev_handle_, "GammaSelector", MV_GAMMA_SELECTOR_USER) == MV_OK);
+      assert(MV_CC_SetGamma(dev_handle_, config.gamma_value) == MV_OK);
+      break;
+    case 2:
+      //      assert(MV_CC_SetBoolValue(dev_handle_, "GammaEnable", false) == MV_OK);
+      MV_CC_SetBoolValue(dev_handle_, "GammaEnable", false);
+      auto gamma_status = MV_CC_SetBoolValue(dev_handle_, "GammaEnable", false);
+      //      if (gamma_status != MV_OK) {
+      //        NODELET_ERROR("Failed to set GammaEnable: %d", gamma_status);
+      //      } else {
+      //        NODELET_INFO("Successfully set GammaEnable");
+      //      }
+      break;
+  }
 
   take_photo_ = config.take_photo;
   //  Width offset of image
