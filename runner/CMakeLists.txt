@@ -44,10 +44,7 @@ target_link_libraries(foam_stitch_nodelet ${catkin_LIBRARIES} ${OpenCV_LIBRARIES
 catkin_install_python(PROGRAMS
         scripts/photo_capture.py
         scripts/photo_stick.py
-        scripts/model_evaluation.py
-        scripts/try/pure/extract_pp_nodelet.py
-        scripts/try/pure/ros_high_undistort_extract_pp.py
-        scripts/test1.py
+        scripts/image_cropping_inference.py
         DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
