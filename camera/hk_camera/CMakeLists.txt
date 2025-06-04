@@ -12,6 +12,7 @@ find_package(catkin REQUIRED COMPONENTS
         camera_info_manager
         rm_msgs
         cv_bridge
+        image_geometry
         )
 find_package(
         OpenCV REQUIRED
@@ -24,7 +25,7 @@ generate_dynamic_reconfigure_options(
 catkin_package(
         LIBRARIES hk_camera
         CATKIN_DEPENDS nodelet roscpp dynamic_reconfigure
-        image_transport camera_info_manager
+        image_transport camera_info_manager image_geometry
 )
 
 include_directories(

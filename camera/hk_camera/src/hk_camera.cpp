@@ -1,12 +1,14 @@
 //
 // Created by zihan on 2022/6/2.
 //
+
 #include <pluginlib/class_list_macros.h>
 #include <hk_camera.h>
 #include <utility>
 #include <ros/time.h>
 #include <opencv2/opencv.hpp>
 #include <cv_bridge/cv_bridge.h>
+#include <image_geometry/pinhole_camera_model.h>
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -14,6 +16,7 @@
 namespace hk_camera
 {
 PLUGINLIB_EXPORT_CLASS(hk_camera::HKCameraNodelet, nodelet::Nodelet)
+
 HKCameraNodelet::HKCameraNodelet()
 {
 }
@@ -76,6 +79,26 @@ void HKCameraNodelet::onInit()
   image_.encoding = pixel_format_;
   img_ = new unsigned char[image_.height * image_.step];
 
+  // —— 新增：把 CameraInfo 转为 OpenCV 内参矩阵和畸变系数 —— //
+  camera_matrix_ = (cv::Mat_<double>(3, 3) <<
+                        info_.K[0], info_.K[1], info_.K[2],
+                    info_.K[3], info_.K[4], info_.K[5],
+                    info_.K[6], info_.K[7], info_.K[8]);
+  dist_coeffs_ = cv::Mat(info_.D);
+
+  // 初始化 cam_model_rectified_
+  cam_model_rectified_.fromCameraInfo(info_);
+
+  // 预计算去畸变映射表 map1_ 和 map2_
+  cv::Mat R = cv::Mat::eye(3, 3, CV_64F);
+  cv::Mat newCameraMatrix = camera_matrix_;  // 这里直接用原始内参，不做视场裁剪
+  cv::Size image_size(info_.width, info_.height);
+  cv::initUndistortRectifyMap(
+      camera_matrix_, dist_coeffs_,
+      R, newCameraMatrix,
+      image_size, CV_32FC1, map1_, map2_);
+  is_rectify_map_ready_ = true;
+
   MV_CC_DEVICE_INFO_LIST stDeviceList;
   memset(&stDeviceList, 0, sizeof(MV_CC_DEVICE_INFO_LIST));
   try
@@ -89,7 +112,6 @@ void HKCameraNodelet::onInit()
     std::cout << "MV_CC_EnumDevices fail! nRet " << std::hex << nRet << std::endl;
     exit(-1);
   }
-  //  assert(MV_CC_EnumDevices(MV_GIGE_DEVICE | MV_USB_DEVICE, &stDeviceList) == MV_OK);
   assert(stDeviceList.nDeviceNum > 0);
 
   // Opens the device.
@@ -136,14 +158,10 @@ void HKCameraNodelet::onInit()
   if (format == 0)
     static_assert(true, "Illegal format");
 
-  //  assert(MV_CC_SetEnumValue(dev_handle_,"PixelFormat",format) == MV_OK);
   assert(MV_CC_SetIntValue(dev_handle_, "Width", image_width_) == MV_OK);
   assert(MV_CC_SetIntValue(dev_handle_, "Height", image_height_) == MV_OK);
   assert(MV_CC_SetIntValue(dev_handle_, "OffsetX", image_offset_x_) == MV_OK);
   assert(MV_CC_SetIntValue(dev_handle_, "OffsetY", image_offset_y_) == MV_OK);
-  //  AcquisitionLineRate ,LineRate can't be set
-  //  assert(MV_CC_SetBoolValue(dev_handle_,"AcquisitionLineRateEnable", true)== MV_OK);
-  //  assert(MV_CC_SetIntValue(dev_handle_,"AcquisitionLineRate", 10)== MV_OK);
 
   _MVCC_FLOATVALUE_T frame_rate;
   MV_CC_SetFrameRate(dev_handle_, frame_rate_);
@@ -155,7 +173,6 @@ void HKCameraNodelet::onInit()
     assert(MV_CC_SetEnumValue(dev_handle_, "TriggerMode", 1) == MV_OK);
     assert(MV_CC_SetEnumValue(dev_handle_, "TriggerSource", MV_TRIGGER_SOURCE_LINE2) == MV_OK);
     assert(MV_CC_SetEnumValue(dev_handle_, "TriggerActivation", 2) == MV_OK);
-    //      Raising_filter_value Setting haven't been realized
 
     trigger_sub_ =
         nh_.subscribe("/rm_hw/" + imu_name_ + "/trigger_time", 50, &hk_camera::HKCameraNodelet::triggerCB, this);
@@ -164,17 +181,21 @@ void HKCameraNodelet::onInit()
   {
     assert(MV_CC_SetEnumValue(dev_handle_, "TriggerMode", 0) == MV_OK);
   }
-  MV_CC_RegisterImageCallBackEx(dev_handle_, onFrameCB, dev_handle_);
+  // —— 修改：将 dev_handle_ 改为 this，方便回调里访问成员变量 —— //
+  MV_CC_RegisterImageCallBackEx(dev_handle_, onFrameCB, this);
 
   if (MV_CC_StartGrabbing(dev_handle_) == MV_OK)
   {
     ROS_INFO("Stream On.");
   }
 
+  image_transport::ImageTransport it_rect(nh_);
+  pub_rect_ = it_rect.advertiseCamera("image_rect", 1);
+
   ros::NodeHandle p_nh(nh_, "hk_camera_reconfig");
-  pub_rect_ = p_nh.advertise<sensor_msgs::Image>("/image_rect", 1);
   srv_ = new dynamic_reconfigure::Server<CameraConfig>(p_nh);
-  dynamic_reconfigure::Server<CameraConfig>::CallbackType cb = boost::bind(&HKCameraNodelet::reconfigCB, this, _1, _2);
+  dynamic_reconfigure::Server<CameraConfig>::CallbackType cb =
+      boost::bind(&HKCameraNodelet::reconfigCB, this, _1, _2);
   srv_->setCallback(cb);
   if (enable_imu_trigger_)
   {
@@ -250,117 +271,93 @@ bool HKCameraNodelet::fifoRead(TriggerPacket& pkt)
 
 void HKCameraNodelet::onFrameCB(unsigned char* pData, MV_FRAME_OUT_INFO_EX* pFrameInfo, void* pUser)
 {
-  if (pFrameInfo)
+  if (!pFrameInfo)
+    return;
+
+  HKCameraNodelet* self = static_cast<HKCameraNodelet*>(pUser);
+
+  ros::Time now = ros::Time::now();
+  if (self->enable_imu_trigger_)
   {
-    ros::Time now = ros::Time::now();
-    if (enable_imu_trigger_)
+    if (!self->trigger_not_sync_)
     {
-      if (!trigger_not_sync_)
+      TriggerPacket pkt;
+      while (!self->fifoRead(pkt))
       {
-        TriggerPacket pkt;
-        while (!fifoRead(pkt))
-        {
-          ros::Duration(0.001).sleep();
-        }
-        //        ROS_INFO("imu:%f", now.toSec() - pkt.trigger_time_.toSec());
-        if (pkt.trigger_counter_ != receive_trigger_counter_++)
-        {
-          ROS_WARN("Trigger not in sync!");
-          trigger_not_sync_ = true;
-        }
-//        else if ((now - pkt.trigger_time_).toSec() < 0)
-//        {
-//          ROS_WARN("Trigger not in sync! Maybe any CAN frames have be dropped?");
-//          trigger_not_sync_ = true;
-//        }
-        else if ((now - pkt.trigger_time_).toSec() > 0.013)
-        {
-          ROS_WARN("Trigger not in sync! Maybe imu %s does not actually trigger camera?", imu_name_.c_str());
-          trigger_not_sync_ = true;
-        }
-        else
-        {
-          image_.header.stamp = pkt.trigger_time_;
-          info_.header.stamp = pkt.trigger_time_;
-        }
+        ros::Duration(0.001).sleep();
       }
-      if (trigger_not_sync_)
+      if (pkt.trigger_counter_ != self->receive_trigger_counter_++)
       {
-        fifo_front_ = fifo_rear_;
-        rm_msgs::EnableImuTrigger imu_trigger_srv;
-        imu_trigger_srv.request.imu_name = imu_name_;
-        imu_trigger_srv.request.enable_trigger = false;
-        imu_trigger_client_.call(imu_trigger_srv);
-        ROS_INFO("Disable imu %s from triggering camera.", imu_name_.c_str());
-        receive_trigger_counter_ = fifo_[fifo_rear_ - 1].trigger_counter_ + 1;
-        return;
+        ROS_WARN("Trigger not in sync!");
+        self->trigger_not_sync_ = true;
+      }
+      else if ((now - pkt.trigger_time_).toSec() > 0.013)
+      {
+        ROS_WARN("Trigger not in sync! Maybe imu %s does not actually trigger camera?", self->imu_name_.c_str());
+        self->trigger_not_sync_ = true;
+      }
+      else
+      {
+        image_.header.stamp = pkt.trigger_time_;
+        info_.header.stamp = pkt.trigger_time_;
       }
     }
-    else
+    if (self->trigger_not_sync_)
     {
-      ros::Time now = ros::Time::now();
-      image_.header.stamp = now;
-      info_.header.stamp = now;
+      self->fifo_front_ = self->fifo_rear_;
+      rm_msgs::EnableImuTrigger imu_trigger_srv;
+      imu_trigger_srv.request.imu_name = self->imu_name_;
+      imu_trigger_srv.request.enable_trigger = false;
+      self->imu_trigger_client_.call(imu_trigger_srv);
+      ROS_INFO("Disable imu %s from triggering camera.", self->imu_name_.c_str());
+      self->receive_trigger_counter_ = self->fifo_[self->fifo_rear_ - 1].trigger_counter_ + 1;
+      return;
     }
-
-    MV_CC_PIXEL_CONVERT_PARAM stConvertParam = { 0 };
-    // Top to bottom are：image width, image height, input data buffer, input data size, source pixel format,
-    // destination pixel format, output data buffer, provided output buffer size
-    stConvertParam.nWidth = pFrameInfo->nWidth;
-    stConvertParam.nHeight = pFrameInfo->nHeight;
-    stConvertParam.pSrcData = pData;
-    stConvertParam.nSrcDataLen = pFrameInfo->nFrameLen;
-    stConvertParam.enSrcPixelType = pFrameInfo->enPixelType;
-    stConvertParam.enDstPixelType = PixelType_Gvsp_BGR8_Packed;
-    stConvertParam.pDstBuffer = img_;
-    stConvertParam.nDstBufferSize = pFrameInfo->nWidth * pFrameInfo->nHeight * 3;
-    MV_CC_ConvertPixelType(dev_handle_, &stConvertParam);
-    memcpy((char*)(&image_.data[0]), img_, image_.step * image_.height);
-
-    //      if(take_photo_)
-    //      {
-    //          std::string str;
-    //          str = std::to_string(count_);
-    //          ROS_INFO("ok");
-    //          cv_bridge::CvImagePtr cv_ptr1;
-    //          cv_ptr1 = cv_bridge::toCvCopy(image_, "bgr8");
-    //          cv::Mat cv_img1;
-    //          cv_ptr1->image.copyTo(cv_img1);
-    //          cv::imwrite("/home/irving/carphoto/"+str+".jpg",cv_img1);
-    //          count_++;
-    //      }
-
-    if (enable_resolution_)
-    {
-      cv_bridge::CvImagePtr cv_ptr;
-      cv_ptr = cv_bridge::toCvCopy(image_, "bgr8");
-      cv::Mat cv_img;
-      cv_ptr->image.copyTo(cv_img);
-      sensor_msgs::ImagePtr image_rect_ptr;
-
-      cv::resize(cv_img, cv_img, cvSize(resolution_ratio_width_, resolution_ratio_height_));
-      image_rect_ptr = cv_bridge::CvImage(std_msgs::Header(), "bgr8", cv_img).toImageMsg();
-      pub_rect_.publish(image_rect_ptr);
-
-      //    if (strcmp(camera_name_.data(), "hk_right"))
-      //    {
-      //      cv::Rect rect(0, 0, 1440 - width_, 1080);
-      //      cv_img = cv_img(rect);
-      //      image_rect_ptr = cv_bridge::CvImage(std_msgs::Header(), "bgr8", cv_img).toImageMsg();
-      //      pub_rect_.publish(image_rect_ptr);
-      //    }
-      //    if (strcmp(camera_name_.data(), "hk_left"))
-      //    {
-      //      cv::Rect rect(width_, 0, 1440 - width_, 1080);
-      //      cv_img = cv_img(rect);
-      //      image_rect_ptr = cv_bridge::CvImage(std_msgs::Header(), "bgr8", cv_img).toImageMsg();
-      //      pub_rect_.publish(image_rect_ptr);
-      //    }
-    }
-    pub_.publish(image_, info_);
   }
   else
-    ROS_ERROR("Grab image failed!");
+  {
+    image_.header.stamp = now;
+    info_.header.stamp = now;
+  }
+
+  MV_CC_PIXEL_CONVERT_PARAM stConvertParam = { 0 };
+  stConvertParam.nWidth = pFrameInfo->nWidth;
+  stConvertParam.nHeight = pFrameInfo->nHeight;
+  stConvertParam.pSrcData = pData;
+  stConvertParam.nSrcDataLen = pFrameInfo->nFrameLen;
+  stConvertParam.enSrcPixelType = pFrameInfo->enPixelType;
+  stConvertParam.enDstPixelType = PixelType_Gvsp_BGR8_Packed;
+  stConvertParam.pDstBuffer = self->img_;
+  stConvertParam.nDstBufferSize = pFrameInfo->nWidth * pFrameInfo->nHeight * 3;
+  MV_CC_ConvertPixelType(self->dev_handle_, &stConvertParam);
+  memcpy((char*)(&image_.data[0]), self->img_, image_.step * image_.height);
+
+  cv_bridge::CvImagePtr cv_ptr = cv_bridge::toCvCopy(image_, "bgr8");
+  cv::Mat raw_bgr = cv_ptr->image;
+
+  cv::Mat rectified_bgr;
+  if (self->is_rectify_map_ready_)
+  {
+    cv::remap(raw_bgr, rectified_bgr, self->map1_, self->map2_, cv::INTER_LINEAR);
+  }
+  else
+  {
+    rectified_bgr = raw_bgr;
+  }
+
+  sensor_msgs::ImagePtr rect_msg =
+      cv_bridge::CvImage(image_.header, "bgr8", rectified_bgr).toImageMsg();
+  sensor_msgs::CameraInfo rect_info = info_;
+  rect_info.header.stamp = image_.header.stamp;
+
+  for (int i = 0; i < 9; i++)
+    rect_info.P[i] = self->camera_matrix_.at<double>(i / 3, i % 3);
+  for (int i = 9; i < 12; i++)
+    rect_info.P[i] = 0.0;
+
+  self->pub_rect_.publish(*rect_msg, rect_info);
+
+   self->pub_.publish(image_, info_);
 }
 
 void HKCameraNodelet::reconfigCB(CameraConfig& config, uint32_t level)
@@ -425,8 +422,7 @@ void HKCameraNodelet::reconfigCB(CameraConfig& config, uint32_t level)
     config.gain_value = gain_value.fCurValue;
   }
 
-  // Black level
-  // Can not be used!
+  // White balance
   assert(MV_CC_SetEnumValue(dev_handle_, "BalanceWhiteAuto", MV_BALANCEWHITE_AUTO_OFF) == MV_OK);
   switch (config.white_selector)
   {
@@ -467,20 +463,11 @@ void HKCameraNodelet::reconfigCB(CameraConfig& config, uint32_t level)
       assert(MV_CC_SetGamma(dev_handle_, config.gamma_value) == MV_OK);
       break;
     case 2:
-      //      assert(MV_CC_SetBoolValue(dev_handle_, "GammaEnable", false) == MV_OK);
       MV_CC_SetBoolValue(dev_handle_, "GammaEnable", false);
-      auto gamma_status = MV_CC_SetBoolValue(dev_handle_, "GammaEnable", false);
-      //      if (gamma_status != MV_OK) {
-      //        NODELET_ERROR("Failed to set GammaEnable: %d", gamma_status);
-      //      } else {
-      //        NODELET_INFO("Successfully set GammaEnable");
-      //      }
       break;
   }
 
   take_photo_ = config.take_photo;
-  //  Width offset of image
-  //  width_ = config.width_offset;
 }
 
 HKCameraNodelet::~HKCameraNodelet()
@@ -489,12 +476,13 @@ HKCameraNodelet::~HKCameraNodelet()
   MV_CC_DestroyHandle(dev_handle_);
 }
 
+// 静态成员定义
 void* HKCameraNodelet::dev_handle_;
 unsigned char* HKCameraNodelet::img_;
 sensor_msgs::Image HKCameraNodelet::image_;
 sensor_msgs::Image HKCameraNodelet::image_rect;
 image_transport::CameraPublisher HKCameraNodelet::pub_;
-ros::Publisher HKCameraNodelet::pub_rect_;
+image_transport::CameraPublisher HKCameraNodelet::pub_rect_;
 sensor_msgs::CameraInfo HKCameraNodelet::info_;
 int HKCameraNodelet::width_{};
 std::string HKCameraNodelet::imu_name_;
@@ -513,4 +501,5 @@ uint32_t HKCameraNodelet::receive_trigger_counter_ = 0;
 bool HKCameraNodelet::enable_resolution_ = false;
 int HKCameraNodelet::resolution_ratio_width_ = 1440;
 int HKCameraNodelet::resolution_ratio_height_ = 1080;
+
 }  // namespace hk_camera

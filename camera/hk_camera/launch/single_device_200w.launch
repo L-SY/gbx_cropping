@@ -9,7 +9,7 @@
         <param name="image_width" value="1624"/>
         <param name="image_height" value="1240"/>
         <param name="pixel_format" value="bgr8"/>
-        <param name="camera_info_url" value=""/>
+        <param name="camera_info_url" value="file://$(find hk_camera)/config/hk_left.yaml"/>
         <param name="camera_frame_id" value="camera_optical_frame"/>
         <param name="camera_sn" value="00J67375789"/>
         <param name="frame_rate" value="90"/>

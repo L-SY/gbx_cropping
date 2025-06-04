@@ -4,6 +4,7 @@
 
 #ifndef SRC_HK_CAMERA_INCLUDE_GALAXY_CAMERA_H_
 #define SRC_HK_CAMERA_INCLUDE_GALAXY_CAMERA_H_
+
 #include <nodelet/nodelet.h>
 #include <image_transport/image_transport.h>
 #include <dynamic_reconfigure/server.h>
@@ -17,6 +18,9 @@
 #include <rm_msgs/EnableImuTrigger.h>
 #include <termios.h>
 #include <std_msgs/String.h>
+
+#include <opencv2/opencv.hpp>
+#include <image_geometry/pinhole_camera_model.h>
 
 namespace hk_camera
 {
@@ -66,7 +70,7 @@ private:
   static int width_;
   static unsigned char* img_;
   static image_transport::CameraPublisher pub_;
-  static ros::Publisher pub_rect_;
+  static image_transport::CameraPublisher pub_rect_;
   static sensor_msgs::CameraInfo info_;
   static std::string imu_name_;
   static bool enable_imu_trigger_;
@@ -88,9 +92,21 @@ private:
   static bool take_photo_;
   static int count_;
   ros::ServiceServer imu_correspondence_service_;
-  static void __stdcall onFrameCB(unsigned char* pData, MV_FRAME_OUT_INFO_EX* pFrameInfo, void* pUser);
+  static void __stdcall onFrameCB(unsigned char* pData,
+                                  MV_FRAME_OUT_INFO_EX* pFrameInfo,
+                                  void* pUser);
   ros::Subscriber camera_change_sub;
+
+  cv::Mat camera_matrix_;
+  cv::Mat dist_coeffs_;
+
+  cv::Mat map1_;
+  cv::Mat map2_;
+  bool is_rectify_map_ready_{false};
+
+  image_geometry::PinholeCameraModel cam_model_rectified_;
 };
+
 }  // namespace hk_camera
 
 #endif  // SRC_HK_CAMERA_INCLUDE_GALAXY_CAMERA_H_
