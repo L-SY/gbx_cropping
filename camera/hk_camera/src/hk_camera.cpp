@@ -79,17 +79,14 @@ void HKCameraNodelet::onInit()
   image_.encoding = pixel_format_;
   img_ = new unsigned char[image_.height * image_.step];
 
-  // —— 新增：把 CameraInfo 转为 OpenCV 内参矩阵和畸变系数 —— //
   camera_matrix_ = (cv::Mat_<double>(3, 3) <<
                         info_.K[0], info_.K[1], info_.K[2],
                     info_.K[3], info_.K[4], info_.K[5],
                     info_.K[6], info_.K[7], info_.K[8]);
   dist_coeffs_ = cv::Mat(info_.D);
 
-  // 初始化 cam_model_rectified_
   cam_model_rectified_.fromCameraInfo(info_);
 
-  // 预计算去畸变映射表 map1_ 和 map2_
   cv::Mat R = cv::Mat::eye(3, 3, CV_64F);
   cv::Mat newCameraMatrix = camera_matrix_;  // 这里直接用原始内参，不做视场裁剪
   cv::Size image_size(info_.width, info_.height);
@@ -181,7 +178,7 @@ void HKCameraNodelet::onInit()
   {
     assert(MV_CC_SetEnumValue(dev_handle_, "TriggerMode", 0) == MV_OK);
   }
-  // —— 修改：将 dev_handle_ 改为 this，方便回调里访问成员变量 —— //
+
   MV_CC_RegisterImageCallBackEx(dev_handle_, onFrameCB, this);
 
   if (MV_CC_StartGrabbing(dev_handle_) == MV_OK)
@@ -476,7 +473,6 @@ HKCameraNodelet::~HKCameraNodelet()
   MV_CC_DestroyHandle(dev_handle_);
 }
 
-// 静态成员定义
 void* HKCameraNodelet::dev_handle_;
 unsigned char* HKCameraNodelet::img_;
 sensor_msgs::Image HKCameraNodelet::image_;

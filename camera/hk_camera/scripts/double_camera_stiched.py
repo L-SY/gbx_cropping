@@ -48,8 +48,8 @@ def publisher():
     pub_debug = rospy.Publisher("/debug_image", Image, queue_size=1)
 
     rospy.init_node('image_stitcher', anonymous=True)
-    rospy.Subscriber("/hk_camera_left/image_raw", Image, callback_left)
-    rospy.Subscriber("/hk_camera_right/image_raw", Image, callback_right)
+    rospy.Subscriber("/hk_camera_left/image_rect", Image, callback_left)
+    rospy.Subscriber("/hk_camera_right/image_rect", Image, callback_right)
 
     rate = rospy.Rate(60)
     while not rospy.is_shutdown():
