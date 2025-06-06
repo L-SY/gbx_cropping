@@ -1,0 +1,10 @@
+<launch>
+    <rosparam file="$(find photo_station_v2)/config/controllers.yaml" command="load"/>
+
+    <node name="controller_spawner" pkg="controller_manager" type="spawner" respawn="false"
+          output="screen" ns="/" args="
+          controllers/joint_state_controller
+          controllers/velocity1_controller
+          controllers/velocity2_controller" />
+
+</launch>
