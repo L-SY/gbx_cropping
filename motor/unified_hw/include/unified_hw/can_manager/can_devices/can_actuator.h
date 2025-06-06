@@ -175,26 +175,26 @@ public:
 
 protected:
   ActuatorCoefficients coeff_;
-  double position_, position_last_;
-  double velocity_;
-  double effort_;
-  double frequency_;
-  uint32_t seq_;
+  double position_{}, position_last_{};
+  double velocity_{};
+  double effort_{};
+  double frequency_{};
+  uint32_t seq_{};
   ros::Time last_timestamp_;
 
-  double cmd_position_;
-  double cmd_velocity_;
-  double cmd_effort_;
-  double cmd_kp_;
-  double cmd_kd_;
+  double cmd_position_{};
+  double cmd_velocity_{};
+  double cmd_effort_{};
+  double cmd_kp_{};
+  double cmd_kd_{};
 
   uint32_t master_id_;
   ControlMode control_mode_;
   double cutoff_freq_;
   LowPassFilter lp_filter_;
 
-  uint8_t temp_;
-  int64_t q_circle_;
+  uint8_t temp_{};
+  int64_t q_circle_{};
 };
 
 } // namespace device

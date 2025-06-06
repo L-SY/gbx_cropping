@@ -73,7 +73,7 @@ can_frame CanRmActuator::write() {
 
   frame.can_dlc = 8;
   double cmd = minAbs(coeff_.effort2act * cmd_effort_, max_out_);
-  ROS_INFO_STREAM(cmd);
+
   int index = id_ -1 ;
   if (-1 < index && index < 4)
   {
