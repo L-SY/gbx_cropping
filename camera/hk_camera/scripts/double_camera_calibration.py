@@ -12,7 +12,7 @@ H_SAVE_PATH = "H_right_to_left.npy"
 IMG_DIR = "calibration_images"
 os.makedirs(IMG_DIR, exist_ok=True)
 
-pattern_size = (11, 8)
+pattern_size = (6, 5)
 flags = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE + cv2.CALIB_CB_FAST_CHECK
 
 def callback(img_left_msg, img_right_msg):
