@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 import io
 import cv2
@@ -29,15 +28,25 @@ fmap = {
 }
 aruco_dict = cv2.aruco.getPredefinedDictionary(fmap[args.family])
 
+# --------- 计算垂直间距，确保上下边距一致 ---------
+total_tag_height = args.tags_per_side * args.tag_size
+available_space = args.page_size - 2 * args.margin - total_tag_height
+vertical_spacing = available_space / (args.tags_per_side - 1) if args.tags_per_side > 1 else 0
+
 # --------- 生成PDF ---------
 buf = io.BytesIO()
 c = canvas.Canvas(buf, pagesize=(args.page_size*mm, args.page_size*mm))
 
-for side in ['left','right']:
-    x_mm = args.margin if side=='left' else (args.page_size - args.margin - args.tag_size)
+# 绘制黑色边框
+page_mm = args.page_size * mm
+# c.setLineWidth(1)
+# c.rect(0, 0, page_mm, page_mm, stroke=1, fill=0)
+
+# 绘制 AprilTag 标签
+for side in ['left', 'right']:
+    x_mm = args.margin if side == 'left' else (args.page_size - args.margin - args.tag_size)
     for i in range(args.tags_per_side):
         tag_id = args.start_id + i
-        # 生成标签图像
         marker_px = int(args.tag_size * 10)
         img = cv2.aruco.generateImageMarker(aruco_dict, tag_id, marker_px)
         pil = Image.fromarray(img)
@@ -45,14 +54,14 @@ for side in ['left','right']:
         pil.save(bio, format='PNG')
         bio.seek(0)
         reader = ImageReader(bio)
-        # 计算位置
-        y_mm = args.page_size - args.margin - args.tag_size - i*(args.tag_size + args.checker_size)
-        c.drawImage(reader, x_mm*mm, y_mm*mm, width=args.tag_size*mm, height=args.tag_size*mm)
+        # y 从顶部下移
+        y_mm = args.page_size - args.margin - args.tag_size - i * (args.tag_size + vertical_spacing)
+        c.drawImage(reader, x_mm * mm, y_mm * mm, width=args.tag_size * mm, height=args.tag_size * mm)
 
 # 底部描述文字
-desc = f"AprilTag {args.family}, IDs {args.start_id}-{args.start_id+args.tags_per_side-1}, tag size {args.tag_size}mm, checker size {args.checker_size}mm"
-c.setFont('Helvetica',8)
-c.drawCentredString(args.page_size*mm/2, 5*mm, desc)
+desc = f"AprilTag {args.family}, IDs {args.start_id}-{args.start_id+args.tags_per_side-1}, tag size {args.tag_size}mm, checkerboard size {args.checker_size}mm"
+c.setFont('Helvetica', 8)
+c.drawCentredString(page_mm/2, 5 * mm, desc)
 
 c.showPage()
 c.save()
