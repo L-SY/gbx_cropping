@@ -10,9 +10,8 @@ find_package(catkin REQUIRED COMPONENTS
         nodelet
         pluginlib
         image_transport
+        dynamic_reconfigure
 )
-
-find_package(dynamic_reconfigure REQUIRED)
 
 generate_dynamic_reconfigure_options(
         cfg/ExtractPP.cfg

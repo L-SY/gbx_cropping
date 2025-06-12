@@ -9,9 +9,9 @@
 </library>
 
 <library path="libfoam_stitch_nodelet">
-<class name="runner/FoamStitchNodelet"
-       type="runner::FoamStitchNodelet"
-       base_class_type="nodelet::Nodelet">
-    <description>Stitch foam_board frames horizontally</description>
-</class>
+    <class name="runner/FoamStitchNodelet"
+           type="runner::FoamStitchNodelet"
+           base_class_type="nodelet::Nodelet">
+        <description>Stitch foam_board frames horizontally</description>
+    </class>
 </library>
