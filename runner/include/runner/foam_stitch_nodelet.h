@@ -32,7 +32,7 @@ private:
   std::mutex pano_mutex_;
 
   int  min_shift_, max_shift_, max_width_;
-  bool auto_reset_;
+  bool auto_reset_, stitch_along_y_;
   double foam_width_ratio_, foam_height_ratio_;
 };
 
