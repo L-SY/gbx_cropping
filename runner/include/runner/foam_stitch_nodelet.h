@@ -33,6 +33,7 @@ private:
 
   int  min_shift_, max_shift_, max_width_;
   bool auto_reset_;
+  double foam_width_ratio_, foam_height_ratio_;
 };
 
 } // namespace runner

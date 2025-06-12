@@ -4,7 +4,7 @@
 namespace runner {
 
 FoamStitchNodelet::FoamStitchNodelet()
-    : min_shift_(1), max_shift_(200), max_width_(2000), auto_reset_(false) {}
+    : min_shift_(1), max_shift_(200), max_width_(2000), auto_reset_(false),foam_width_ratio_(0.7), foam_height_ratio_(0.8) {}
 
 FoamStitchNodelet::~FoamStitchNodelet() {}
 
@@ -35,6 +35,8 @@ void FoamStitchNodelet::reconfigureCallback(FoamStitchConfig& cfg, uint32_t) {
   max_shift_  = cfg.max_shift;
   max_width_  = cfg.max_width;
   auto_reset_ = cfg.auto_reset;
+  foam_width_ratio_ = cfg.foam_width_ratio;
+  foam_height_ratio_= cfg.foam_height_ratio;
   if (cfg.reset_now) {
     resetPanorama(); last_img_.release();
     NODELET_INFO("Panorama and history reset");
@@ -59,31 +61,48 @@ void FoamStitchNodelet::imageCb(const sensor_msgs::ImageConstPtr& msg) {
     NODELET_WARN("Received empty image");
     return;
   }
-  debug_raw_pub_.publish(cv_ptr->toImageMsg());
+
+  int W = img.cols, H = img.rows;
+  int cw = std::max(1, int(W * foam_width_ratio_));
+  int ch = std::max(1, int(H * foam_height_ratio_));
+  int x0 = (W - cw) / 2;
+  int y0 = (H - ch) / 2;
+  cv::Rect foam_roi(x0, y0, cw, ch);
+
+//  cv::Mat foam_crop = img(foam_roi).clone();
+//  debug_raw_pub_.publish(
+//      cv_bridge::CvImage(msg->header, "bgr8", foam_crop).toImageMsg());
+
+  cv::Mat annotated = img.clone();
+  cv::rectangle(annotated, foam_roi, cv::Scalar(255,0,0), 2);
+  debug_raw_pub_.publish(
+      cv_bridge::CvImage(msg->header, "bgr8", annotated).toImageMsg());
+
+  cv::Mat to_stitch = img(foam_roi).clone();
 
   std::lock_guard<std::mutex> lock(pano_mutex_);
 
   // 首帧或重置
   if (auto_reset_ || panorama_.empty() || last_img_.empty()) {
     NODELET_INFO("Initializing panorama with first frame");
-    panorama_ = img.clone();
-    last_img_ = img.clone();
+    panorama_ = to_stitch.clone();
+    last_img_ = to_stitch.clone();
     publishPanorama(msg->header.stamp);
     return;
   }
 
   // 尺寸对齐
-  if (img.size() != last_img_.size()) {
+  if (to_stitch.size() != last_img_.size()) {
     NODELET_WARN("Image size mismatch (%dx%d vs %dx%d), resizing to first frame size",
-                 img.cols, img.rows,
+                 to_stitch.cols, to_stitch.rows,
                  last_img_.cols, last_img_.rows);
-    cv::resize(img, img, last_img_.size());
+    cv::resize(to_stitch, to_stitch, last_img_.size());
   }
 
   // 转灰度
   cv::Mat gray_prev, gray_cur;
   cv::cvtColor(last_img_, gray_prev, cv::COLOR_BGR2GRAY);
-  cv::cvtColor(img,       gray_cur,  cv::COLOR_BGR2GRAY);
+  cv::cvtColor(to_stitch,       gray_cur,  cv::COLOR_BGR2GRAY);
 
   cv::equalizeHist(gray_prev, gray_prev);
   cv::equalizeHist(gray_cur,  gray_cur);
@@ -102,7 +121,7 @@ void FoamStitchNodelet::imageCb(const sensor_msgs::ImageConstPtr& msg) {
   if (des_prev.empty() || des_cur.empty()) {
     NODELET_WARN("No descriptors found (des_prev empty: %d, des_cur empty: %d)",
                  des_prev.empty(), des_cur.empty());
-    last_img_ = img.clone();
+    last_img_ = to_stitch.clone();
     return;
   }
 
@@ -126,7 +145,7 @@ void FoamStitchNodelet::imageCb(const sensor_msgs::ImageConstPtr& msg) {
   if (num_show > 0) {
     cv::drawMatches(
         last_img_, kp_prev,
-        img,       kp_cur,
+        to_stitch,       kp_cur,
         std::vector<cv::DMatch>(good_matches.begin(), good_matches.begin()+num_show),
         vis_matches,
         cv::Scalar::all(-1), cv::Scalar::all(-1),
@@ -156,12 +175,12 @@ void FoamStitchNodelet::imageCb(const sensor_msgs::ImageConstPtr& msg) {
                    cv::countNonZero(inliers), inliers.rows);
     } else {
       NODELET_ERROR("estimateAffinePartial2D failed: returned empty matrix");
-      last_img_ = img.clone();
+      last_img_ = to_stitch.clone();
       return;
     }
   } else {
     NODELET_WARN("Not enough good matches (%zu) for RANSAC, need >=4", good_matches.size());
-    last_img_ = img.clone();
+    last_img_ = to_stitch.clone();
     return;
   }
 
@@ -170,21 +189,21 @@ void FoamStitchNodelet::imageCb(const sensor_msgs::ImageConstPtr& msg) {
   NODELET_INFO("Rounded dx to %d", idx);
   if (std::abs(idx) < min_shift_ || std::abs(idx) > max_shift_) {
     NODELET_WARN("dx %d out of valid range [%d, %d]", idx, min_shift_, max_shift_);
-    last_img_ = img.clone();
+    last_img_ = to_stitch.clone();
     return;
   }
 
   // 拼接逻辑
   int add_w = std::abs(idx);
-  if (add_w > 0 && add_w < img.cols) {
+  if (add_w > 0 && add_w < to_stitch.cols) {
     cv::Mat strip;
     // dx > 0: current image moved right => new region on left
     if (dx > 0) {
-      strip = img(cv::Rect(0, 0, add_w, img.rows)).clone();
+      strip = to_stitch(cv::Rect(0, 0, add_w, to_stitch.rows)).clone();
       cv::hconcat(strip, panorama_, panorama_);
     } else {
       // dx < 0: current image moved left => new region on right
-      strip = img(cv::Rect(img.cols - add_w, 0, add_w, img.rows)).clone();
+      strip = to_stitch(cv::Rect(to_stitch.cols - add_w, 0, add_w, to_stitch.rows)).clone();
       cv::hconcat(panorama_, strip, panorama_);
     }
     // 裁剪超过最大宽度
@@ -205,7 +224,7 @@ void FoamStitchNodelet::imageCb(const sensor_msgs::ImageConstPtr& msg) {
                     cv::Point(add_w - 1, h - 1),
                     cv::Scalar(0,0,255), 2);
       cv::rectangle(vis,
-                    cv::Point(vis.cols - img.cols, 0),
+                    cv::Point(vis.cols - to_stitch.cols, 0),
                     cv::Point(vis.cols - 1, h - 1),
                     cv::Scalar(0,255,0), 2);
     } else {
@@ -216,7 +235,7 @@ void FoamStitchNodelet::imageCb(const sensor_msgs::ImageConstPtr& msg) {
                     cv::Scalar(0,0,255), 2);
       cv::rectangle(vis,
                     cv::Point(0, 0),
-                    cv::Point(img.cols - 1, h - 1),
+                    cv::Point(to_stitch.cols - 1, h - 1),
                     cv::Scalar(0,255,0), 2);
     }
     cv_bridge::CvImage dbg(msg->header, "bgr8", vis);
@@ -225,7 +244,7 @@ void FoamStitchNodelet::imageCb(const sensor_msgs::ImageConstPtr& msg) {
     publishPanorama(msg->header.stamp);
   }
 
-  last_img_ = img.clone();
+  last_img_ = to_stitch.clone();
 }
 
 void FoamStitchNodelet::publishPanorama(const ros::Time& stamp) {
